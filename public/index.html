@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MiniMax Coding Plan API Proxy</title>
+    <title>MiniMax Token Plan API Proxy</title>
     <style>
         * {
             margin: 0;
@@ -231,6 +231,19 @@
             text-decoration: underline;
         }
 
+        .info-box {
+            background: #e7f3ff;
+            border-radius: 8px;
+            padding: 16px;
+            margin: 16px 0;
+            border-left: 4px solid #2196f3;
+        }
+
+        .info-box h4 {
+            color: #1976d2;
+            margin-bottom: 8px;
+        }
+
         @media (max-width: 600px) {
             .header h1 {
                 font-size: 1.8rem;
@@ -253,30 +266,45 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>🤖 MiniMax Coding Plan API Proxy</h1>
-            <p>轻松通过 Vercel 代理访问 MiniMax Coding Plan API</p>
+            <h1>MiniMax Token Plan API Proxy</h1>
+            <p>通过 Vercel 代理访问 MiniMax M2.7 模型 | 支持 Claude Code、Cursor 等 AI 编程工具</p>
+        </div>
+
+        <div class="info-box">
+            <h4>什么是 Token Plan？</h4>
+            <p>Token Plan 是 MiniMax 订阅套餐的全面升级，提供全模态模型支持（文本、语音、视频、音乐、图像），搭载最新 <strong>MiniMax-M2.7</strong> 模型。</p>
+            <p style="margin-top: 8px;">了解更多: <a href="https://platform.minimaxi.com/docs/token-plan/intro" target="_blank">官方文档</a></p>
         </div>
 
         <div class="card">
             <h2>配置设置</h2>
 
             <div class="form-group">
-                <label for="apiKey">MiniMax API Key</label>
-                <input type="password" id="apiKey" placeholder="输入您的 MiniMax API Key">
+                <label for="region">选择区域</label>
+                <select id="region">
+                    <option value="cn">中国区 (api.minimaxi.com)</option>
+                    <option value="int">国际区 (api.minimax.io)</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="apiKey">MiniMax Token Plan API Key</label>
+                <input type="password" id="apiKey" placeholder="输入您的 MiniMax Token Plan API Key">
             </div>
 
             <div class="form-group">
                 <label for="model">选择模型</label>
                 <select id="model">
-                    <option value="MiniMax-M2.5">MiniMax-M2.5 (推荐)</option>
+                    <option value="MiniMax-M2.7">MiniMax-M2.7 (推荐)</option>
+                    <option value="MiniMax-M2.5">MiniMax-M2.5</option>
                     <option value="MiniMax-M2.1">MiniMax-M2.1</option>
                 </select>
             </div>
 
             <div class="btn-group">
-                <button class="btn" onclick="testConnection()">🧪 测试连接</button>
-                <button class="btn" onclick="generateClaudeCodeConfig()">📝 Claude Code 配置</button>
-                <button class="btn" onclick="generateCursorConfig()">📝 Cursor 配置</button>
+                <button class="btn" onclick="testConnection()">测试连接</button>
+                <button class="btn" onclick="generateClaudeCodeConfig()">Claude Code 配置</button>
+                <button class="btn" onclick="generateCursorConfig()">Cursor 配置</button>
             </div>
 
             <div id="testResult" class="test-result"></div>
@@ -304,16 +332,42 @@
             <button class="copy-btn" onclick="copyConfig()">复制配置</button>
         </div>
 
+        <div class="card">
+            <h2>快速开始</h2>
+            <div class="info-box">
+                <h4>1. 获取 API Key</h4>
+                <p>访问 <a href="https://platform.minimaxi.com/subscribe/token-plan" target="_blank">订阅 Token Plan</a>，然后在 <a href="https://platform.minimaxi.com/user-center/basic-information/interface-key" target="_blank">接口密钥</a> 获取您的 Token Plan API Key。</p>
+            </div>
+            <div class="info-box">
+                <h4>2. Python 示例</h4>
+                <pre style="background: #2d3748; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto;">
+import anthropic
+
+client = anthropic.Anthropic(
+    base_url="https://your-proxy.vercel.app/anthropic",
+    api_key="your-token-plan-api-key"
+)
+
+message = client.messages.create(
+    model="MiniMax-M2.7",
+    max_tokens=1024,
+    messages=[
+        {"role": "user", "content": "Hello!"}
+    ]
+)
+print(message.content)</pre>
+            </div>
+        </div>
+
         <div class="footer">
             <p>
                 Powered by <a href="https://vercel.com" target="_blank">Vercel</a> |
-                API by <a href="https://platform.minimax.io" target="_blank">MiniMax</a>
+                API by <a href="https://platform.minimaxi.com" target="_blank">MiniMax</a>
             </p>
         </div>
     </div>
 
     <script>
-        // 自动获取当前域名
         const currentDomain = window.location.origin;
         document.getElementById('openaiEndpoint').textContent = `${currentDomain}/v1/chat/completions`;
         document.getElementById('anthropicEndpoint').textContent = `${currentDomain}/anthropic/v1/messages`;
@@ -333,28 +387,32 @@
             resultDiv.style.display = 'block';
 
             try {
-                const response = await fetch('/v1/chat/completions', {
+                const response = await fetch('/anthropic/v1/messages', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${apiKey}`
+                        'Authorization': `Bearer ${apiKey}`,
+                        'anthropic-version': '2023-06-01'
                     },
                     body: JSON.stringify({
                         model: model,
-                        messages: [{ role: 'user', content: 'Say "Connection successful!" in Chinese.' }],
-                        max_tokens: 50
+                        max_tokens: 100,
+                        messages: [
+                            {"role": "user", "content": "Say hello in Chinese."}
+                        ]
                     })
                 });
 
                 const data = await response.json();
 
                 if (response.ok) {
-                    showResult('success', `✅ 连接成功！响应: ${data.choices?.[0]?.message?.content || JSON.stringify(data)}`);
+                    const content = data.content?.[0]?.text || JSON.stringify(data);
+                    showResult('success', `连接成功！响应: ${content}`);
                 } else {
-                    showResult('error', `❌ 连接失败: ${data.error?.message || JSON.stringify(data)}`);
+                    showResult('error', `连接失败: ${data.error?.message || JSON.stringify(data)}`);
                 }
             } catch (error) {
-                showResult('error', `❌ 请求错误: ${error.message}`);
+                showResult('error', `请求错误: ${error.message}`);
             }
         }
 
@@ -374,16 +432,14 @@
             }
 
             const config = {
-                env: {
-                    ANTHROPIC_BASE_URL: `${proxyUrl}/anthropic`,
-                    ANTHROPIC_AUTH_TOKEN: apiKey,
-                    API_TIMEOUT_MS: "3000000",
-                    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: 1,
-                    ANTHROPIC_MODEL: "MiniMax-M2.5",
-                    ANTHROPIC_SMALL_FAST_MODEL: "MiniMax-M2.5",
-                    ANTHROPIC_DEFAULT_SONNET_MODEL: "MiniMax-M2.5",
-                    ANTHROPIC_DEFAULT_OPUS_MODEL: "MiniMax-M2.5",
-                    ANTHROPIC_DEFAULT_HAIKU_MODEL: "MiniMax-M2.5"
+                "env": {
+                    "ANTHROPIC_BASE_URL": `${proxyUrl}/anthropic`,
+                    "ANTHROPIC_AUTH_TOKEN": apiKey,
+                    "ANTHROPIC_MODEL": "MiniMax-M2.7",
+                    "ANTHROPIC_DEFAULT_SONNET_MODEL": "MiniMax-M2.7",
+                    "ANTHROPIC_DEFAULT_OPUS_MODEL": "MiniMax-M2.7",
+                    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "MiniMax-M2.7",
+                    "API_TIMEOUT_MS": "300000"
                 }
             };
 
@@ -401,14 +457,16 @@
 
             const instructions = `# Cursor AI 配置
 
-## OpenAI 兼容接口配置
+## Anthropic 兼容接口配置
 1. 打开 Cursor 设置 (Settings → Models)
-2. Override OpenAI Base URL: ${proxyUrl}/v1
+2. Override Anthropic Base URL: ${proxyUrl}/anthropic
 3. API Key: ${apiKey}
-4. 添加自定义模型: MiniMax-M2.5
+4. Model: MiniMax-M2.7
 
-## 使用方式
-在 Cursor 的 AI 对话中，可以选择 MiniMax-M2.5 模型使用 MiniMax 服务。`;
+## 或者使用 OpenAI 兼容接口
+1. Override OpenAI Base URL: ${proxyUrl}/v1
+2. API Key: ${apiKey}
+3. 添加自定义模型: MiniMax-M2.7`;
 
             showConfig('Cursor 配置说明', instructions);
         }
