@@ -3,7 +3,7 @@
  * Vercel Serverless Function
  */
 
-const API_BASE = 'https://api.minimax.io';
+const API_BASE = 'https://api.minimaxi.com';
 
 export default async function handler(req, res) {
   // CORS headers
@@ -38,7 +38,7 @@ export default async function handler(req, res) {
     };
 
     if (path.includes('/anthropic')) {
-      targetUrl = `https://api.minimax.io${path}`;
+      targetUrl = `https://api.minimaxi.com${path}`;
       if (req.headers['anthropic-version']) {
         headers['anthropic-version'] = req.headers['anthropic-version'];
       }
