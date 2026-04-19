@@ -6,6 +6,23 @@
 const DEFAULT_API_BASE = 'https://api.minimaxi.com';
 const DEFAULT_API_BASE_WWW = 'https://www.minimaxi.com';
 
+function getHeader(headers, name) {
+  if (typeof headers.get === 'function') {
+    return headers.get(name);
+  }
+  return headers[name] || headers[name.toLowerCase()];
+}
+
+async function getRequestBody(request) {
+  if (request.body && typeof request.body === 'object') {
+    return request.body;
+  }
+  if (typeof request.json === 'function') {
+    return await request.json().catch(() => ({}));
+  }
+  return {};
+}
+
 export async function handleProxyRequest(request, options = {}) {
   const apiBase = options.apiBase || DEFAULT_API_BASE;
   const apiBaseWww = options.apiBaseWww || DEFAULT_API_BASE_WWW;
@@ -19,8 +36,8 @@ export async function handleProxyRequest(request, options = {}) {
     ? request.url.split('?')[0]
     : new URL(request.url).pathname.split('?')[0];
   const originalPath = urlPath || '/v1/chat/completions';
-  const apiKey = request.headers.get('authorization')?.replace('Bearer ', '') ||
-                 request.headers.get('x-api-key') ||
+  const apiKey = getHeader(request.headers, 'authorization')?.replace('Bearer ', '') ||
+                 getHeader(request.headers, 'x-api-key') ||
                  options.apiKey;
 
   if (!apiKey) {
@@ -39,7 +56,7 @@ export async function handleProxyRequest(request, options = {}) {
     targetUrl = `${apiBaseWww}${targetPath}`;
   } else if (originalPath.includes('/anthropic')) {
     targetUrl = `${apiBase}${originalPath}`;
-    const anthropicVersion = request.headers.get('anthropic-version');
+    const anthropicVersion = getHeader(request.headers, 'anthropic-version');
     if (anthropicVersion) headers['anthropic-version'] = anthropicVersion;
   } else if (originalPath.startsWith('/v1')) {
     targetUrl = `${apiBase}${originalPath}`;
@@ -48,9 +65,10 @@ export async function handleProxyRequest(request, options = {}) {
   }
 
   let body = null;
+  let requestBodyObj = {};
   if (['POST', 'PUT', 'PATCH'].includes(request.method)) {
-    const requestBody = await request.json().catch(() => ({}));
-    body = JSON.stringify(requestBody);
+    requestBodyObj = await getRequestBody(request);
+    body = JSON.stringify(requestBodyObj);
   }
 
   const response = await fetch(targetUrl, {
@@ -60,7 +78,7 @@ export async function handleProxyRequest(request, options = {}) {
   });
 
   const contentType = response.headers.get('content-type');
-  const isStreaming = (await request.json().catch(() => ({}))).stream !== false;
+  const isStreaming = requestBodyObj.stream !== false;
 
   if (isStreaming && contentType?.includes('text/event-stream')) {
     return new Response(response.body, {
