@@ -2,27 +2,20 @@
   "version": 2,
   "builds": [
     {
-      "src": "api/**/*.js",
+      "src": "vercel/**/*.js",
       "use": "@vercel/node"
     }
   ],
   "routes": [
     {
       "src": "/v1/(.*)",
-      "dest": "/api/v1.js"
-    },
-    {
-      "src": "/anthropic/(.*)",
-      "dest": "/api/anthropic.js"
+      "dest": "/vercel/index.js"
     },
     {
       "src": "/token_plan/(.*)",
-      "dest": "/api/v1.js"
+      "dest": "/vercel/index.js"
     },
-    {
-      "src": "/coding_plan/(.*)",
-      "dest": "/api/v1.js"
-    },
+
     {
       "src": "/chat",
       "dest": "/public/chat.html"

@@ -4,9 +4,7 @@
  */
 
 import { handleProxyRequest } from '../src/core.js';
-
-const API_BASE = 'https://api.minimaxi.com';
-const API_BASE_WWW = 'https://www.minimaxi.com';
+import { API_BASE, API_BASE_WWW } from '../src/config.js';
 
 export default {
   async fetch(request, env, ctx) {
@@ -16,15 +14,14 @@ export default {
         headers: {
           'Access-Control-Allow-Origin': '*',
           'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-api-key, anthropic-version',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-api-key',
         }
       });
     }
 
     const options = {
-      apiBase: API_BASE,
-      apiBaseWww: API_BASE_WWW,
-      apiKey: env.MINIMAX_API_KEY
+      apiBase: env.MINIMAX_API_BASE || API_BASE,
+      apiBaseWww: env.MINIMAX_API_BASE_WWW || API_BASE_WWW
     };
 
     try {

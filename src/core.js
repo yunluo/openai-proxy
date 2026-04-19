@@ -3,9 +3,6 @@
  * 环境无关的核心代理功能
  */
 
-const DEFAULT_API_BASE = 'https://api.minimaxi.com';
-const DEFAULT_API_BASE_WWW = 'https://www.minimaxi.com';
-
 function getHeader(headers, name) {
   if (typeof headers.get === 'function') {
     return headers.get(name);
@@ -24,8 +21,8 @@ async function getRequestBody(request) {
 }
 
 export async function handleProxyRequest(request, options = {}) {
-  const apiBase = options.apiBase || DEFAULT_API_BASE;
-  const apiBaseWww = options.apiBaseWww || DEFAULT_API_BASE_WWW;
+  const apiBase = options.apiBase;
+  const apiBaseWww = options.apiBaseWww;
 
   const headers = {
     'Content-Type': 'application/json',
@@ -37,8 +34,7 @@ export async function handleProxyRequest(request, options = {}) {
     : new URL(request.url).pathname.split('?')[0];
   const originalPath = urlPath || '/v1/chat/completions';
   const apiKey = getHeader(request.headers, 'authorization')?.replace('Bearer ', '') ||
-                 getHeader(request.headers, 'x-api-key') ||
-                 options.apiKey;
+                 getHeader(request.headers, 'x-api-key');
 
   if (!apiKey) {
     return new Response(JSON.stringify({
@@ -54,14 +50,10 @@ export async function handleProxyRequest(request, options = {}) {
   if (originalPath.includes('/token_plan') || originalPath.includes('/coding_plan')) {
     const targetPath = originalPath.replace(/^\/token_plan/, '').replace(/^\/coding_plan/, '');
     targetUrl = `${apiBaseWww}${targetPath}`;
-  } else if (originalPath.includes('/anthropic')) {
-    targetUrl = `${apiBase}${originalPath}`;
-    const anthropicVersion = getHeader(request.headers, 'anthropic-version');
-    if (anthropicVersion) headers['anthropic-version'] = anthropicVersion;
   } else if (originalPath.startsWith('/v1')) {
     targetUrl = `${apiBase}${originalPath}`;
   } else {
-    targetUrl = `${apiBase}/anthropic/v1/messages`;
+    targetUrl = `${apiBase}${originalPath}`;
   }
 
   let body = null;

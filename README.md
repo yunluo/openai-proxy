@@ -1,67 +1,57 @@
 # MiniMax Token Plan API Proxy
 
-一个基于 Vercel 的 MiniMax Token Plan API 反向代理服务，支持中国区和国际区 API。
+一个支持 Vercel 和 Cloudflare Workers 的 MiniMax Token Plan API 反向代理服务。
+
+## 项目背景
+
+在企业内网环境中，部分 AI 服务商的接口可能受到限制。本项目通过将 MiniMax API 请求代理到企业内网可访问的 Vercel/Cloudflare Workers 域名，实现曲线访问 MiniMax AI 服务。
 
 ## 功能特点
 
 - 支持 **MiniMax-M2.7** 最新模型
 - 支持 **中国区** (`api.minimaxi.com`)
 - OpenAI 兼容接口 (`/v1/*`)
-- Anthropic 兼容接口 (`/anthropic/*`)
 - 支持 Claude Code、Cursor、TRAE 等 AI 编程工具
-- API Key 安全存储（Vercel 环境变量）
+- API Key 由客户端提供（安全可靠）
 - 全球边缘加速
 
 ## API 端点
 
-部署后可用以下端点：
+| 平台 | 端点 URL |
+|------|----------|
+| **Vercel** | `https://maxapi.vercel.app/v1/chat/completions` |
+| **Cloudflare Workers** | `https://maxapi.yunluo.workers.dev/v1/chat/completions` |
 
-| 接口类型 | 端点 URL |
-|----------|----------|
-| **OpenAI 兼容** | `https://your-domain.vercel.app/v1/chat/completions` |
-| **Anthropic 兼容** | `https://your-domain.vercel.app/anthropic/v1/messages` |
+## 一键部署
 
-## 快速部署
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/import)
 
-支持 **Vercel** 和 **Cloudflare Workers** 两种部署方式。
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?to=:github)
 
-### 方法一：Vercel CLI
+## 手动部署
 
-```bash
-# 1. 安装 Vercel CLI
-npm i -g vercel
+### Vercel (GitHub 导入)
 
-# 2. 登录
-vercel login
+1. 访问 [vercel.com/new](https://vercel.com/new)
+2. 导入您的 GitHub 仓库
+3. 点击 Deploy
 
-# 3. 部署
-cd minimax-proxy
-vercel --prod
-```
+### Cloudflare Workers (GitHub 集成)
 
-### 方法二：GitHub 导入
+1. 访问 [Cloudflare Dashboard](https://dash.cloudflare.com/)
+2. Workers & Pages → 创建 Worker → 选择从 GitHub 导入
+3. 连接您的 GitHub 仓库并部署
 
-1. 将代码推送到 GitHub 仓库
-2. 访问 [vercel.com/new](https://vercel.com/new)
-3. 导入您的 GitHub 仓库
-4. 点击 Deploy
+## 环境变量配置（可选）
 
-### 方法三：Cloudflare Workers
+如需自定义 API 基础地址，可配置以下环境变量：
 
-```bash
-# 1. 安装 Wrangler CLI
-npm install -g wrangler
+| 变量名 | 默认值 | 说明 |
+|--------|--------|------|
+| `MINIMAX_API_BASE` | `https://api.minimaxi.com` | API 调用地址 |
+| `MINIMAX_API_BASE_WWW` | `https://www.minimaxi.com` | 额度查询地址 |
 
-# 2. 登录 Cloudflare
-wrangler login
-
-# 3. 部署
-npm run deploy:cf
-```
-
-**注意**：Cloudflare Workers 部署需要先在 Cloudflare Dashboard 设置 `MINIMAX_API_KEY` 环境变量。
-
-## 配置步骤
+## 使用方法
 
 ### 1. 获取 Token Plan API Key
 
@@ -72,15 +62,7 @@ npm run deploy:cf
 - 此 API Key 为 Token Plan 专属，和按量计费 API Key 不可互换
 - 此 API Key 仅在 Token Plan 订阅有效期内有效
 
-### 2. 配置环境变量
-
-在 Vercel 项目设置中添加：
-
-| 变量名 | 值 |
-|--------|-----|
-| `MINIMAX_API_KEY` | 您的 Token Plan API Key |
-
-### 3. 配置 AI 编程工具
+### 2. 配置 AI 编程工具
 
 #### Claude Code
 
@@ -89,7 +71,7 @@ npm run deploy:cf
 ```json
 {
   "env": {
-    "ANTHROPIC_BASE_URL": "https://your-domain.vercel.app/anthropic",
+    "ANTHROPIC_BASE_URL": "https://maxapi.vercel.app",
     "ANTHROPIC_AUTH_TOKEN": "your-token-plan-api-key",
     "ANTHROPIC_MODEL": "MiniMax-M2.7",
     "ANTHROPIC_DEFAULT_SONNET_MODEL": "MiniMax-M2.7",
@@ -103,7 +85,7 @@ npm run deploy:cf
 #### Cursor
 
 1. Settings → Models
-2. Override Anthropic Base URL: `https://your-domain.vercel.app/anthropic`
+2. Override Anthropic Base URL: `https://maxapi.vercel.app`
 3. 输入 API Key
 4. 选择模型: `MiniMax-M2.7`
 
@@ -113,7 +95,7 @@ npm run deploy:cf
 import anthropic
 
 client = anthropic.Anthropic(
-    base_url="https://your-domain.vercel.app/anthropic",
+    base_url="https://maxapi.vercel.app",
     api_key="your-token-plan-api-key"
 )
 
@@ -131,12 +113,13 @@ print(message.content)
 
 ```
 minimax-proxy/
-├── api/
-│   └── proxy.js      # Vercel Serverless Function 适配器
+├── vercel/
+│   └── index.js      # Vercel Serverless Function 适配器
 ├── workers/
 │   └── index.js      # Cloudflare Workers 适配器
 ├── src/
-│   └── core.js       # 共享核心代理逻辑
+│   ├── core.js       # 共享核心代理逻辑
+│   └── config.js     # API 配置（支持环境变量）
 ├── public/
 │   └── index.html    # 配置页面
 ├── vercel.json       # Vercel 配置
@@ -162,6 +145,7 @@ minimax-proxy/
 - [MiniMax 开放平台](https://platform.minimaxi.com)
 - [Token Plan 文档](https://platform.minimaxi.com/docs/token-plan/intro)
 - [Vercel 文档](https://vercel.com/docs)
+- [Cloudflare Workers 文档](https://developers.cloudflare.com/workers/)
 
 ## License
 

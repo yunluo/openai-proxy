@@ -4,14 +4,12 @@
  */
 
 import { handleProxyRequest } from '../src/core.js';
-
-const API_BASE = 'https://api.minimaxi.com';
-const API_BASE_WWW = 'https://www.minimaxi.com';
+import { API_BASE, API_BASE_WWW } from '../src/config.js';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-api-key, anthropic-version');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-api-key');
 
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
@@ -19,8 +17,7 @@ export default async function handler(req, res) {
 
   const options = {
     apiBase: API_BASE,
-    apiBaseWww: API_BASE_WWW,
-    apiKey: process.env.MINIMAX_API_KEY
+    apiBaseWww: API_BASE_WWW
   };
 
   try {
