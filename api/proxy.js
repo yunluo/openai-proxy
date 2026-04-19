@@ -19,8 +19,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const path = req.url.replace('/api/proxy', '').split('?')[0] || '/v1/chat/completions';
-
+    const originalPath = req.url.split('?')[0] || '/v1/chat/completions';
     const apiKey = req.headers['authorization']?.replace('Bearer ', '') ||
                    req.headers['x-api-key'] ||
                    process.env.MINIMAX_API_KEY;
@@ -40,13 +39,16 @@ export default async function handler(req, res) {
       'Authorization': `Bearer ${apiKey}`
     };
 
-    if (path.includes('/token_plan') || path.includes('/coding_plan')) {
-      targetUrl = `${API_BASE_WWW}${path}`;
-    } else if (path.includes('/anthropic')) {
-      targetUrl = `${API_BASE}${path}`;
+    // 判断请求类型并构建目标路径
+    if (originalPath.includes('/token_plan') || originalPath.includes('/coding_plan')) {
+      // 去掉 /token_plan 或 /coding_plan 前缀
+      let targetPath = originalPath.replace(/^\/token_plan/, '').replace(/^\/coding_plan/, '');
+      targetUrl = `${API_BASE_WWW}${targetPath}`;
+    } else if (originalPath.includes('/anthropic')) {
+      targetUrl = `${API_BASE}${originalPath}`;
       headers['anthropic-version'] = req.headers['anthropic-version'] || '2023-06-01';
-    } else if (path.startsWith('/v1')) {
-      targetUrl = `${API_BASE}${path}`;
+    } else if (originalPath.startsWith('/v1')) {
+      targetUrl = `${API_BASE}${originalPath}`;
     } else {
       targetUrl = `${API_BASE}/anthropic/v1/messages`;
     }
@@ -62,16 +64,24 @@ export default async function handler(req, res) {
       body: body,
     });
 
-    const data = await response.json();
+    let data;
+    const contentType = response.headers.get('content-type');
+    if (contentType && contentType.includes('application/json')) {
+      data = await response.json();
+    } else {
+      data = await response.text();
+    }
 
     return res.status(response.status).json(data);
 
   } catch (error) {
     console.error('MiniMax Proxy Error:', error);
+    console.error('Target URL:', targetUrl);
+    console.error('Request headers:', headers);
     return res.status(500).json({
       error: {
         type: 'internal_error',
-        message: 'An error occurred while processing your request.'
+        message: error.message || 'An error occurred while processing your request.'
       }
     });
   }
