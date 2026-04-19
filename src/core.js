@@ -15,7 +15,10 @@ export async function handleProxyRequest(request, options = {}) {
   };
 
   let targetUrl = '';
-  const originalPath = new URL(request.url).pathname.split('?')[0] || '/v1/chat/completions';
+  const urlPath = request.url.startsWith('/') 
+    ? request.url.split('?')[0]
+    : new URL(request.url).pathname.split('?')[0];
+  const originalPath = urlPath || '/v1/chat/completions';
   const apiKey = request.headers.get('authorization')?.replace('Bearer ', '') ||
                  request.headers.get('x-api-key') ||
                  options.apiKey;
