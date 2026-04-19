@@ -47,8 +47,8 @@ export async function handleProxyRequest(request, options = {}) {
 
   headers['Authorization'] = `Bearer ${apiKey}`;
 
-  if (originalPath.includes('/token_plan') || originalPath.includes('/coding_plan')) {
-    const targetPath = originalPath.replace(/^\/token_plan/, '').replace(/^\/coding_plan/, '');
+  if (originalPath.includes('/token_plan')) {
+    const targetPath = originalPath.replace(/^\/token_plan/, '');
     targetUrl = `${apiBaseWww}${targetPath}`;
   } else if (originalPath.startsWith('/v1')) {
     targetUrl = `${apiBase}${originalPath}`;

@@ -16,8 +16,8 @@ export default async function handler(req, res) {
   }
 
   const options = {
-    apiBase: API_BASE,
-    apiBaseWww: API_BASE_WWW
+    apiBase: process.env.MINIMAX_API_BASE || API_BASE,
+    apiBaseWww: process.env.MINIMAX_API_BASE_WWW || API_BASE_WWW
   };
 
   try {

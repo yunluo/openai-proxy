@@ -15,11 +15,6 @@
       "src": "/token_plan/(.*)",
       "dest": "/vercel/index.js"
     },
-
-    {
-      "src": "/chat",
-      "dest": "/public/chat.html"
-    },
     {
       "src": "/(.*)",
       "dest": "/public/$1"
