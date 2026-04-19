@@ -1,14 +1,3 @@
----
-AIGC:
-    ContentProducer: Minimax Agent AI
-    ContentPropagator: Minimax Agent AI
-    Label: AIGC
-    ProduceID: "00000000000000000000000000000000"
-    PropagateID: "00000000000000000000000000000000"
-    ReservedCode1: 3046022100bbc057b67cc15ac7ad42b61a1743b683952237e89a1514b7f637d2d5070b2aae022100e8e7a7d315ea682b712be2eafa0d237eeaede5d5e0da9aa8dd41a11c77b7cbc1
-    ReservedCode2: 3044022033a3c334477781d8d3d26b85412751b6e942479371fe32d17393b7a91a0e681002206dd9faea0ca12f7ad6e4f34a8e78c41e1b85530e58b48ca72e3d30a912ed450d
----
-
 # MiniMax Token Plan API Proxy
 
 一个基于 Vercel 的 MiniMax Token Plan API 反向代理服务，支持中国区和国际区 API。
@@ -16,7 +5,7 @@ AIGC:
 ## 功能特点
 
 - 支持 **MiniMax-M2.7** 最新模型
-- 支持 **中国区** (`api.minimaxi.com`) 和 **国际区** (`api.minimax.io`)
+- 支持 **中国区** (`api.minimaxi.com`)
 - OpenAI 兼容接口 (`/v1/*`)
 - Anthropic 兼容接口 (`/anthropic/*`)
 - 支持 Claude Code、Cursor、TRAE 等 AI 编程工具
