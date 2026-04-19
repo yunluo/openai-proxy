@@ -18,6 +18,9 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
 
+  let targetUrl = '';
+  let headers = {};
+
   try {
     const originalPath = req.url.split('?')[0] || '/v1/chat/completions';
     const apiKey = req.headers['authorization']?.replace('Bearer ', '') ||
@@ -33,8 +36,7 @@ export default async function handler(req, res) {
       });
     }
 
-    let targetUrl;
-    let headers = {
+    headers = {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`
     };
@@ -42,7 +44,7 @@ export default async function handler(req, res) {
     // 判断请求类型并构建目标路径
     if (originalPath.includes('/token_plan') || originalPath.includes('/coding_plan')) {
       // 去掉 /token_plan 或 /coding_plan 前缀
-      let targetPath = originalPath.replace(/^\/token_plan/, '').replace(/^\/coding_plan/, '');
+      const targetPath = originalPath.replace(/^\/token_plan/, '').replace(/^\/coding_plan/, '');
       targetUrl = `${API_BASE_WWW}${targetPath}`;
     } else if (originalPath.includes('/anthropic')) {
       targetUrl = `${API_BASE}${originalPath}`;
@@ -64,8 +66,35 @@ export default async function handler(req, res) {
       body: body,
     });
 
-    let data;
+    // Check if streaming is requested (default to true if not specified)
+    const isStreaming = req.body?.stream !== false;
     const contentType = response.headers.get('content-type');
+
+    if (isStreaming && contentType?.includes('text/event-stream')) {
+      // Stream the response directly
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          res.write(decoder.decode(value, { stream: true }));
+        }
+        res.end();
+      } catch (streamError) {
+        console.error('Stream error:', streamError);
+        res.end();
+      }
+      return;
+    }
+
+    // Non-streaming response
+    let data;
     if (contentType && contentType.includes('application/json')) {
       data = await response.json();
     } else {
