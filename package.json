@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Proxy for MiniMax Coding Plan API - supports Vercel and Cloudflare Workers",
   "private": true,
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  },
   "scripts": {
     "dev": "vercel dev",
     "dev:cf": "wrangler dev",
