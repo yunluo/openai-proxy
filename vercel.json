@@ -4,6 +4,10 @@
     {
       "src": "api/**/*.js",
       "use": "@vercel/node"
+    },
+    {
+      "src": "public/**",
+      "use": "static"
     }
   ],
   "routes": [
@@ -26,10 +30,6 @@
     {
       "src": "/chat",
       "dest": "/public/chat.html"
-    },
-    {
-      "src": "/",
-      "dest": "/public/index.html"
     },
     {
       "src": "/(.*)",
