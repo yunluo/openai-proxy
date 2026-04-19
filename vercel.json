@@ -4,10 +4,6 @@
     {
       "src": "api/**/*.js",
       "use": "@vercel/node"
-    },
-    {
-      "src": "public/**",
-      "use": "static"
     }
   ],
   "routes": [
@@ -26,10 +22,6 @@
     {
       "src": "/coding_plan/(.*)",
       "dest": "/api/v1.js"
-    },
-    {
-      "src": "/chat",
-      "dest": "/public/chat.html"
     },
     {
       "src": "/(.*)",
