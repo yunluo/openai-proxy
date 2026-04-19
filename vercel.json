@@ -24,6 +24,10 @@
       "dest": "/api/v1.js"
     },
     {
+      "src": "/chat",
+      "dest": "/public/chat.html"
+    },
+    {
       "src": "/(.*)",
       "dest": "/public/$1"
     }
