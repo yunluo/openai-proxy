@@ -1,4 +1,4 @@
-name = "minimax-proxy"
+name = "openai-proxy"
 main = "workers/index.js"
 compatibility_date = "2024-01-01"
 
