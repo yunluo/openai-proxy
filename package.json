@@ -1,11 +1,13 @@
 {
   "name": "minimax-coding-plan-proxy",
   "version": "1.0.0",
-  "description": "Vercel proxy for MiniMax Coding Plan API",
+  "description": "Proxy for MiniMax Coding Plan API - supports Vercel and Cloudflare Workers",
   "private": true,
   "scripts": {
     "dev": "vercel dev",
+    "dev:cf": "wrangler dev",
     "build": "vercel build",
-    "deploy": "vercel --prod"
+    "deploy": "vercel --prod",
+    "deploy:cf": "wrangler deploy"
   }
 }
