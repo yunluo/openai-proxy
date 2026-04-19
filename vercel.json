@@ -16,6 +16,14 @@
       "dest": "/api/anthropic.js"
     },
     {
+      "src": "/token_plan/(.*)",
+      "dest": "/api/v1.js"
+    },
+    {
+      "src": "/coding_plan/(.*)",
+      "dest": "/api/v1.js"
+    },
+    {
       "src": "/(.*)",
       "dest": "/public/$1"
     }

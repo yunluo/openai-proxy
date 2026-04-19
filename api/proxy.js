@@ -40,7 +40,7 @@ export default async function handler(req, res) {
       'Authorization': `Bearer ${apiKey}`
     };
 
-    if (path.includes('/token_plan')) {
+    if (path.includes('/token_plan') || path.includes('/coding_plan')) {
       targetUrl = `${API_BASE_WWW}${path}`;
     } else if (path.includes('/anthropic')) {
       targetUrl = `${API_BASE}${path}`;
