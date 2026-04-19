@@ -34,6 +34,8 @@ AIGC:
 
 ## 快速部署
 
+支持 **Vercel** 和 **Cloudflare Workers** 两种部署方式。
+
 ### 方法一：Vercel CLI
 
 ```bash
@@ -54,6 +56,21 @@ vercel --prod
 2. 访问 [vercel.com/new](https://vercel.com/new)
 3. 导入您的 GitHub 仓库
 4. 点击 Deploy
+
+### 方法三：Cloudflare Workers
+
+```bash
+# 1. 安装 Wrangler CLI
+npm install -g wrangler
+
+# 2. 登录 Cloudflare
+wrangler login
+
+# 3. 部署
+npm run deploy:cf
+```
+
+**注意**：Cloudflare Workers 部署需要先在 Cloudflare Dashboard 设置 `MINIMAX_API_KEY` 环境变量。
 
 ## 配置步骤
 
@@ -126,18 +143,21 @@ print(message.content)
 ```
 minimax-proxy/
 ├── api/
-│   ├── proxy.js      # 核心代理逻辑
-│   ├── v1.js         # OpenAI 兼容端点
-│   └── anthropic.js  # Anthropic 兼容端点
+│   └── proxy.js      # Vercel Serverless Function 适配器
+├── workers/
+│   └── index.js      # Cloudflare Workers 适配器
+├── src/
+│   └── core.js       # 共享核心代理逻辑
 ├── public/
 │   └── index.html    # 配置页面
 ├── vercel.json       # Vercel 配置
+├── wrangler.toml     # Cloudflare Workers 配置
 └── package.json      # 项目依赖
 ```
 
 ## 技术栈
 
-- Vercel Serverless Functions
+- Vercel Serverless Functions / Cloudflare Workers
 - Node.js
 - API Proxy
 
@@ -146,6 +166,7 @@ minimax-proxy/
 - 请妥善保管您的 API Key
 - 遵守 [MiniMax API 使用条款](https://platform.minimaxi.com/docs/terms)
 - Vercel 免费计划每月提供 100GB 带宽
+- Cloudflare Workers 免费计划每天 100,000 请求
 
 ## 相关链接
 
