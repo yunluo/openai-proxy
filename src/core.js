@@ -14,11 +14,11 @@ function getHeader(headers, name) {
 }
 
 async function getRequestBody(request) {
+  if (request.body && typeof request.json === 'function') {
+    return await request.json().catch(() => ({}));
+  }
   if (request.body && typeof request.body === 'object') {
     return request.body;
-  }
-  if (typeof request.json === 'function') {
-    return await request.json().catch(() => ({}));
   }
   return {};
 }
