@@ -77,7 +77,7 @@
 | `CUSTOM_PROVIDER_2_API_BASE` | 第二个自定义厂商 API 地址 |
 | ... | 以此类推 |
 
-例如配置 `CUSTOM_PROVIDER_1_NAME=azure` + `CUSTOM_PROVIDER_1_API_BASE=https://myazure.openai.azure.com` 后，即可通过 `/azure/v1/chat/completions` 访问。
+例如配置 `CUSTOM_PROVIDER_1_NAME=mole` + `CUSTOM_PROVIDER_1_API_BASE=https://api.mole.ai` 后，即可通过 `/mole/v1/chat/completions` 访问。
 
 ### 认证方式
 
@@ -91,24 +91,28 @@
 
 ```bash
 # MiniMax (默认，兼容旧版)
-curl https://maxapi.vercel.app/v1/chat/completions \
-  -H "Authorization: Bearer $MINIMAX_KEY" \
-  -d '{"model":"MiniMax-M2.7","messages":[{"role":"user","content":"Hello"}]}'
+curl --request POST 'https://maxapi.vercel.app/v1/chat/completions' \
+  --header 'content-type: application/json' \
+  --header 'authorization: Bearer xxxxxxxxxx' \
+  --data '{"model":"MiniMax-M2.7","messages":[{"role":"user","content":"Hello"}]}'
 
 # 智谱 GLM
-curl https://maxapi.vercel.app/glm/v1/chat/completions \
-  -H "Authorization: Bearer $GLM_KEY" \
-  -d '{"model":"glm-4","messages":[{"role":"user","content":"Hello"}]}'
+curl --request POST 'https://maxapi.vercel.app/glm/v1/chat/completions' \
+  --header 'content-type: application/json' \
+  --header 'authorization: Bearer xxxxxxxxxx' \
+  --data '{"model":"glm-4","messages":[{"role":"user","content":"Hello"}]}'
 
 # OpenAI GPT
-curl https://maxapi.vercel.app/gpt/v1/chat/completions \
-  -H "Authorization: Bearer $OPENAI_KEY" \
-  -d '{"model":"gpt-4o","messages":[{"role":"user","content":"Hello"}]}'
+curl --request POST 'https://maxapi.vercel.app/gpt/v1/chat/completions' \
+  --header 'content-type: application/json' \
+  --header 'authorization: Bearer xxxxxxxxxx' \
+  --data '{"model":"gpt-4o","messages":[{"role":"user","content":"Hello"}]}'
 
-# 自定义 Provider
-curl https://maxapi.vercel.app/myprovider/v1/chat/completions \
-  -H "Authorization: Bearer $MY_KEY" \
-  -d '{"model":"default","messages":[{"role":"user","content":"Hello"}]}'
+# 自定义 Provider（需配置 CUSTOM_PROVIDER_1_NAME=mole + CUSTOM_PROVIDER_1_API_BASE）
+curl --request POST 'https://maxapi.vercel.app/mole/v1/chat/completions' \
+  --header 'content-type: application/json' \
+  --header 'authorization: Bearer xxxxxxxxxx' \
+  --data '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}]}'
 ```
 
 ### Python SDK (OpenAI 兼容)
@@ -116,14 +120,25 @@ curl https://maxapi.vercel.app/myprovider/v1/chat/completions \
 ```python
 from openai import OpenAI
 
+# GPT
 client = OpenAI(
     base_url="https://maxapi.vercel.app/gpt/v1",
-    api_key="your-api-key"
+    api_key="your-gpt-key"
 )
-
 response = client.chat.completions.create(
     model="gpt-4o",
     messages=[{"role": "user", "content": "Hello!"}]
+)
+print(response.choices[0].message.content)
+
+# 自定义 Provider（需配置 CUSTOM_PROVIDER_1_NAME=mole + CUSTOM_PROVIDER_1_API_BASE）
+client = OpenAI(
+    base_url="https://maxapi.vercel.app/mole/v1",
+    api_key="your-mole-key"
+)
+response = client.chat.completions.create(
+    model="deepseek-v4-flash",
+    messages=[{"role": "user", "content": "hi"}]
 )
 print(response.choices[0].message.content)
 ```
@@ -138,7 +153,7 @@ curl https://maxapi.vercel.app/token_plan/billing/query \
 ## 项目结构
 
 ```
-minimax-proxy/
+openai-proxy/
 ├── vercel/
 │   └── index.js      # Vercel Serverless Function 适配器
 ├── workers/
