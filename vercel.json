@@ -16,6 +16,10 @@
       "dest": "/vercel/index.js"
     },
     {
+      "src": "/([^/]+)/v1/(.*)",
+      "dest": "/vercel/index.js"
+    },
+    {
       "src": "/(.*)",
       "dest": "/public/$1"
     }

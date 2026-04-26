@@ -1,10 +1,18 @@
-/**
- * MiniMax Token Plan API Proxy
- * Vercel Serverless Function 适配器
- */
-
 import { handleProxyRequest } from '../src/core.js';
-import { API_BASE, API_BASE_WWW } from '../src/config.js';
+import { API_BASE, API_BASE_WWW, PROVIDERS } from '../src/config.js';
+
+function loadCustomProviders(envSource) {
+  const providers = {};
+  let i = 1;
+  while (i <= 100) {
+    const name = envSource[`CUSTOM_PROVIDER_${i}_NAME`];
+    const apiBase = envSource[`CUSTOM_PROVIDER_${i}_API_BASE`];
+    if (!name || !apiBase) break;
+    providers[name.toLowerCase()] = { apiBase };
+    i++;
+  }
+  return providers;
+}
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -16,7 +24,15 @@ export default async function handler(req, res) {
   }
 
   const options = {
-    apiBase: process.env.MINIMAX_API_BASE || API_BASE,
+    providers: {
+      ...Object.fromEntries(
+        Object.entries(PROVIDERS).map(([name, cfg]) => [
+          name,
+          { apiBase: process.env[cfg.envVar] || cfg.default }
+        ])
+      ),
+      ...loadCustomProviders(process.env),
+    },
     apiBaseWww: process.env.MINIMAX_API_BASE_WWW || API_BASE_WWW
   };
 

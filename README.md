@@ -1,26 +1,36 @@
-# MiniMax Token Plan API Proxy
+# Multi-Provider API Proxy
 
-一个支持 Vercel 和 Cloudflare Workers 的 MiniMax Token Plan API 反向代理服务。
+一个支持 Vercel 和 Cloudflare Workers 的多厂商 AI API 反向代理服务，通过 URL 路径前缀将请求路由到不同的 AI 服务商。
 
 ## 项目背景
 
-在企业内网环境中，部分 AI 服务商的接口可能受到限制。本项目通过将 MiniMax API 请求代理到企业内网可访问的 Vercel/Cloudflare Workers 域名，实现曲线访问 MiniMax AI 服务。
+在企业内网环境中，部分 AI 服务商的接口可能受到限制。本项目通过将 AI API 请求代理到企业内网可访问的 Vercel/Cloudflare Workers 域名，实现曲线访问多个 AI 服务商。
 
 ## 功能特点
 
-- 支持 **MiniMax-M2.7** 最新模型
-- 支持 **中国区** (`api.minimaxi.com`)
-- OpenAI 兼容接口 (`/v1/*`)
-- 支持 Claude Code、Cursor、TRAE 等 AI 编程工具
+- 多厂商路由: `/{provider}/v1/*` 路径前缀自动映射到对应厂商
+- 内置支持 **MiniMax**、**GLM (智谱)**、**Kimi (月之暗面)**、**DeepSeek**、**OpenAI (GPT)**
+- 支持通过环境变量自定义任意厂商（自定义 Provider）
+- 兼容 OpenAI 格式接口 (`/v1/*`) — 默认路由到 MiniMax
+- `Bearer` / `X-API-Key` 认证方式
 - API Key 由客户端提供（安全可靠）
-- 全球边缘加速
+- 全球边缘加速（Vercel / Cloudflare Workers）
 
 ## API 端点
 
-| 平台 | 端点 URL |
-|------|----------|
-| **Vercel** | `https://maxapi.vercel.app/v1/chat/completions` |
-| **Cloudflare Workers** | `https://maxapi.yunluo.workers.dev/v1/chat/completions` |
+| 厂商 | 路径前缀 | 目标 API |
+|------|----------|----------|
+| MiniMax | `/minimax/v1/` 或 `/v1/` (默认) | `https://api.minimaxi.com` |
+| 智谱 GLM | `/glm/v1/` | `https://open.bigmodel.cn` |
+| Kimi 月之暗面 | `/kim/v1/` | `https://api.moonshot.cn` |
+| DeepSeek | `/deepseek/v1/` | `https://api.deepseek.com` |
+| OpenAI GPT | `/gpt/v1/` | `https://api.openai.com` |
+| 自定义 | `/{自定义名称}/v1/` | 由环境变量配置 |
+
+| 平台 | 部署地址示例 |
+|------|-------------|
+| **Vercel** | `https://maxapi.vercel.app` |
+| **Cloudflare Workers** | `https://maxapi.yunluo.workers.dev` |
 
 ## 一键部署
 
@@ -44,69 +54,85 @@
 
 ## 环境变量配置（可选）
 
-如需自定义 API 基础地址，可配置以下环境变量：
+### 内置厂商 API 地址
 
 | 变量名 | 默认值 | 说明 |
 |--------|--------|------|
-| `MINIMAX_API_BASE` | `https://api.minimaxi.com` | API 调用地址 |
-| `MINIMAX_API_BASE_WWW` | `https://www.minimaxi.com` | 额度查询地址 |
+| `MINIMAX_API_BASE` | `https://api.minimaxi.com` | MiniMax API 地址 |
+| `MINIMAX_API_BASE_WWW` | `https://www.minimaxi.com` | MiniMax 额度查询地址 |
+| `GLM_API_BASE` | `https://open.bigmodel.cn` | 智谱 API 地址 |
+| `KIMI_API_BASE` | `https://api.moonshot.cn` | Kimi API 地址 |
+| `DEEPSEEK_API_BASE` | `https://api.deepseek.com` | DeepSeek API 地址 |
+| `GPT_API_BASE` | `https://api.openai.com` | OpenAI API 地址 |
 
-## 使用方法
+### 自定义 Provider
 
-### 1. 获取 Token Plan API Key
+支持通过编号环境变量添加任意数量的自定义厂商：
 
-1. 访问 [Token Plan 订阅页面](https://platform.minimaxi.com/subscribe/token-plan)
-2. 订阅成功后，前往 [接口密钥页面](https://platform.minimaxi.com/user-center/basic-information/interface-key) 获取 API Key
+| 变量名 | 说明 |
+|--------|------|
+| `CUSTOM_PROVIDER_1_NAME` | 自定义厂商名称（用作 URL 路径前缀） |
+| `CUSTOM_PROVIDER_1_API_BASE` | 自定义厂商 API 地址 |
+| `CUSTOM_PROVIDER_2_NAME` | 第二个自定义厂商名称 |
+| `CUSTOM_PROVIDER_2_API_BASE` | 第二个自定义厂商 API 地址 |
+| ... | 以此类推 |
 
-**重要提示：**
-- 此 API Key 为 Token Plan 专属，和按量计费 API Key 不可互换
-- 此 API Key 仅在 Token Plan 订阅有效期内有效
+例如配置 `CUSTOM_PROVIDER_1_NAME=azure` + `CUSTOM_PROVIDER_1_API_BASE=https://myazure.openai.azure.com` 后，即可通过 `/azure/v1/chat/completions` 访问。
 
-### 2. 配置 AI 编程工具
+### 认证方式
 
-#### Claude Code
+客户端通过以下任一方式传递 API Key（发送到目标厂商的 `Authorization` 头）：
+- `Authorization: Bearer <your-api-key>`
+- `X-API-Key: <your-api-key>`
 
-在 `~/.claude/settings.json` 中添加：
+## 使用示例
 
-```json
-{
-  "env": {
-    "ANTHROPIC_BASE_URL": "https://maxapi.vercel.app",
-    "ANTHROPIC_AUTH_TOKEN": "your-token-plan-api-key",
-    "ANTHROPIC_MODEL": "MiniMax-M2.7",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "MiniMax-M2.7",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "MiniMax-M2.7",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "MiniMax-M2.7",
-    "API_TIMEOUT_MS": "300000"
-  }
-}
+所有请求地址格式均为 `https://<部署域名>/<provider>/v1/<path>`:
+
+```bash
+# MiniMax (默认，兼容旧版)
+curl https://maxapi.vercel.app/v1/chat/completions \
+  -H "Authorization: Bearer $MINIMAX_KEY" \
+  -d '{"model":"MiniMax-M2.7","messages":[{"role":"user","content":"Hello"}]}'
+
+# 智谱 GLM
+curl https://maxapi.vercel.app/glm/v1/chat/completions \
+  -H "Authorization: Bearer $GLM_KEY" \
+  -d '{"model":"glm-4","messages":[{"role":"user","content":"Hello"}]}'
+
+# OpenAI GPT
+curl https://maxapi.vercel.app/gpt/v1/chat/completions \
+  -H "Authorization: Bearer $OPENAI_KEY" \
+  -d '{"model":"gpt-4o","messages":[{"role":"user","content":"Hello"}]}'
+
+# 自定义 Provider
+curl https://maxapi.vercel.app/myprovider/v1/chat/completions \
+  -H "Authorization: Bearer $MY_KEY" \
+  -d '{"model":"default","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
-#### Cursor
-
-1. Settings → Models
-2. Override Anthropic Base URL: `https://maxapi.vercel.app`
-3. 输入 API Key
-4. 选择模型: `MiniMax-M2.7`
-
-#### Python SDK
+### Python SDK (OpenAI 兼容)
 
 ```python
-import anthropic
+from openai import OpenAI
 
-client = anthropic.Anthropic(
-    base_url="https://maxapi.vercel.app",
-    api_key="your-token-plan-api-key"
+client = OpenAI(
+    base_url="https://maxapi.vercel.app/gpt/v1",
+    api_key="your-api-key"
 )
 
-message = client.messages.create(
-    model="MiniMax-M2.7",
-    max_tokens=1024,
-    messages=[
-        {"role": "user", "content": "Hello!"}
-    ]
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Hello!"}]
 )
-print(message.content)
+print(response.choices[0].message.content)
+```
+
+### Token Plan 额度查询
+
+```bash
+curl https://maxapi.vercel.app/token_plan/billing/query \
+  -H "Authorization: Bearer $YOUR_TOKEN_PLAN_KEY"
 ```
 
 ## 项目结构
@@ -118,11 +144,11 @@ minimax-proxy/
 ├── workers/
 │   └── index.js      # Cloudflare Workers 适配器
 ├── src/
-│   ├── core.js       # 共享核心代理逻辑
-│   └── config.js     # API 配置（支持环境变量）
+│   ├── core.js       # 共享核心代理逻辑（多厂商路由）
+│   └── config.js     # API 配置（内置厂商 + 环境变量）
 ├── public/
 │   └── index.html    # 配置页面
-├── vercel.json       # Vercel 配置
+├── vercel.json       # Vercel 配置（含通用 Provider 路由）
 ├── wrangler.toml     # Cloudflare Workers 配置
 └── package.json      # 项目依赖
 ```
@@ -130,7 +156,7 @@ minimax-proxy/
 ## 技术栈
 
 - Vercel Serverless Functions / Cloudflare Workers
-- Node.js
+- Node.js 18+（本地开发 / Vercel 部署需要）
 - API Proxy
 
 ## 注意事项
@@ -144,6 +170,10 @@ minimax-proxy/
 
 - [MiniMax 开放平台](https://platform.minimaxi.com)
 - [Token Plan 文档](https://platform.minimaxi.com/docs/token-plan/intro)
+- [智谱 GLM 开放平台](https://open.bigmodel.cn)
+- [月之暗面 Kimi 开放平台](https://platform.moonshot.cn)
+- [DeepSeek 开放平台](https://platform.deepseek.com)
+- [OpenAI API 文档](https://platform.openai.com/docs)
 - [Vercel 文档](https://vercel.com/docs)
 - [Cloudflare Workers 文档](https://developers.cloudflare.com/workers/)
 

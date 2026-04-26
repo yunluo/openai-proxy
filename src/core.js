@@ -1,8 +1,3 @@
-/**
- * MiniMax Token Plan API Proxy - Core Logic
- * 环境无关的核心代理功能
- */
-
 function getHeader(headers, name) {
   if (typeof headers.get === 'function') {
     return headers.get(name);
@@ -20,16 +15,42 @@ async function getRequestBody(request) {
   return {};
 }
 
-export async function handleProxyRequest(request, options = {}) {
-  const apiBase = options.apiBase;
-  const apiBaseWww = options.apiBaseWww;
+function resolveProvider(originalPath, options) {
+  if (originalPath.startsWith('/token_plan')) {
+    const strippedPath = originalPath.replace(/^\/token_plan/, '');
+    return { provider: 'minimax', targetBase: options.apiBaseWww, strippedPath };
+  }
 
+  const match = originalPath.match(/^\/([^/]+)\/v1(\/.*)?$/);
+  if (match) {
+    const providerName = match[1].toLowerCase();
+    const strippedPath = match[2] || '';
+
+    if (providerName === 'minimax') {
+      return { provider: 'minimax', targetBase: options.providers?.minimax?.apiBase, strippedPath: '/v1' + strippedPath };
+    }
+
+    const provider = options.providers?.[providerName];
+    if (provider) {
+      return { provider: providerName, targetBase: provider.apiBase, strippedPath: '/v1' + strippedPath };
+    }
+
+    return { error: true, message: `Unknown provider: ${providerName}` };
+  }
+
+  if (originalPath.startsWith('/v1')) {
+    return { provider: 'minimax', targetBase: options.providers?.minimax?.apiBase, strippedPath: originalPath };
+  }
+
+  return { provider: 'minimax', targetBase: options.providers?.minimax?.apiBase, strippedPath: originalPath };
+}
+
+export async function handleProxyRequest(request, options = {}) {
   const headers = {
     'Content-Type': 'application/json',
   };
 
-  let targetUrl = '';
-  const urlPath = request.url.startsWith('/') 
+  const urlPath = request.url.startsWith('/')
     ? request.url.split('?')[0]
     : new URL(request.url).pathname.split('?')[0];
   const originalPath = urlPath || '/v1/chat/completions';
@@ -47,14 +68,27 @@ export async function handleProxyRequest(request, options = {}) {
 
   headers['Authorization'] = `Bearer ${apiKey}`;
 
-  if (originalPath.includes('/token_plan')) {
-    const targetPath = originalPath.replace(/^\/token_plan/, '');
-    targetUrl = `${apiBaseWww}${targetPath}`;
-  } else if (originalPath.startsWith('/v1')) {
-    targetUrl = `${apiBase}${originalPath}`;
-  } else {
-    targetUrl = `${apiBase}${originalPath}`;
+  const resolved = resolveProvider(originalPath, options);
+
+  if (resolved.error) {
+    return new Response(JSON.stringify({
+      error: {
+        type: 'not_found',
+        message: resolved.message
+      }
+    }), { status: 404, headers: { 'Content-Type': 'application/json' } });
   }
+
+  if (!resolved.targetBase) {
+    return new Response(JSON.stringify({
+      error: {
+        type: 'not_found',
+        message: `Provider base URL not configured`
+      }
+    }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+  }
+
+  const targetUrl = `${resolved.targetBase}${resolved.strippedPath}`;
 
   let body = null;
   let requestBodyObj = {};
