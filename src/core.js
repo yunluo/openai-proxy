@@ -119,6 +119,17 @@ export async function handleProxyRequest(request, options = {}) {
 
   if (contentType && contentType.includes('application/json')) {
     const data = await response.json();
+    if (resolved.provider === 'deepseek' && data.choices?.[0]?.message) {
+      const msg = data.choices[0].message;
+      if (!('reasoning_content' in msg)) {
+        Object.defineProperty(msg, 'reasoning_content', {
+          value: null,
+          writable: true,
+          enumerable: true,
+          configurable: true
+        });
+      }
+    }
     return new Response(JSON.stringify(data), {
       status: response.status,
       headers: { 'Content-Type': 'application/json' }
