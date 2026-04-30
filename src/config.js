@@ -7,6 +7,8 @@ export const PROVIDERS = {
   kim:      { envVar: 'KIMI_API_BASE',      default: 'https://api.moonshot.cn' },
   deepseek: { envVar: 'DEEPSEEK_API_BASE',  default: 'https://api.deepseek.com' },
   gpt:      { envVar: 'GPT_API_BASE',       default: 'https://api.openai.com' },
+  xiaomi:   { envVar: 'XIAOMI_API_BASE',    default: 'https://api.xiaomimimo.com' },
+  qwen:     { envVar: 'QWEN_API_BASE',      default: 'https://dashscope.aliyuncs.com/compatible-mode' },
 };
 
 export { API_BASE, API_BASE_WWW };
