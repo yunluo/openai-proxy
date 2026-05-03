@@ -9,7 +9,7 @@
 ## 功能特点
 
 - 多厂商路由: `/{provider}/v1/*` 路径前缀自动映射到对应厂商
-- 内置支持 **MiniMax**、**GLM (智谱)**、**Kimi (月之暗面)**、**DeepSeek**、**OpenAI (GPT)**、**小米 MiMo**、**通义千问**
+- 内置支持 **MiniMax**、**GLM (智谱)**、**Kimi (月之暗面)**、**DeepSeek**、**OpenAI (GPT)**、**小米 MiMo**、**通义千问**、**OpenCode Go**
 - 支持通过环境变量自定义任意厂商（自定义 Provider）
 - 兼容 OpenAI 格式接口 (`/v1/*`) — 默认路由到 MiniMax
 - `Bearer` / `X-API-Key` 认证方式
@@ -27,6 +27,7 @@
 | OpenAI GPT | `/gpt/v1/` | `https://api.openai.com` |
 | 小米 MiMo | `/xiaomi/v1/` | `https://api.xiaomimimo.com` |
 | 通义千问 | `/qwen/v1/` | `https://dashscope.aliyuncs.com/compatible-mode` |
+| OpenCode Go | `/opencode/v1/` | `https://opencode.ai/zen/go` |
 | 自定义 | `/{自定义名称}/v1/` | 由环境变量配置 |
 
 | 平台 | 部署地址示例 |
@@ -68,6 +69,7 @@
 | `GPT_API_BASE` | `https://api.openai.com` | OpenAI API 地址 |
 | `XIAOMI_API_BASE` | `https://api.xiaomimimo.com` | 小米 MiMo API 地址 |
 | `QWEN_API_BASE` | `https://dashscope.aliyuncs.com/compatible-mode` | 通义千问 API 地址 |
+| `OPENCODE_API_BASE` | `https://opencode.ai/zen/go` | OpenCode Go API 地址 |
 
 ### 自定义 Provider
 
@@ -124,6 +126,12 @@ curl --request POST 'https://maxapi.vercel.app/qwen/v1/chat/completions' \
   --header 'authorization: Bearer xxxxxxxxxx' \
   --data '{"model":"qwen-turbo","messages":[{"role":"user","content":"Hello"}]}'
 
+# OpenCode Go
+curl --request POST 'https://maxapi.vercel.app/opencode/v1/chat/completions' \
+  --header 'content-type: application/json' \
+  --header 'authorization: Bearer xxxxxxxxxx' \
+  --data '{"model":"glm-4-plus","messages":[{"role":"user","content":"Hello"}]}'
+
 # 自定义 Provider（需配置 CUSTOM_PROVIDER_1_NAME=mole + CUSTOM_PROVIDER_1_API_BASE）
 curl --request POST 'https://maxapi.vercel.app/mole/v1/chat/completions' \
   --header 'content-type: application/json' \
@@ -165,6 +173,17 @@ client = OpenAI(
 )
 response = client.chat.completions.create(
     model="qwen-turbo",
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+print(response.choices[0].message.content)
+
+# OpenCode Go
+client = OpenAI(
+    base_url="https://maxapi.vercel.app/opencode/v1",
+    api_key="your-opencode-key"
+)
+response = client.chat.completions.create(
+    model="glm-4-plus",
     messages=[{"role": "user", "content": "Hello!"}]
 )
 print(response.choices[0].message.content)
@@ -229,6 +248,7 @@ openai-proxy/
 - [OpenAI API 文档](https://platform.openai.com/docs)
 - [小米 MiMo 开放平台](https://platform.xiaomimimo.com)
 - [通义千问百炼平台](https://bailian.console.aliyun.com)
+- [OpenCode AI](https://opencode.ai)
 - [Vercel 文档](https://vercel.com/docs)
 - [Cloudflare Workers 文档](https://developers.cloudflare.com/workers/)
 
