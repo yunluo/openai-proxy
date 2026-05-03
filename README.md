@@ -29,7 +29,7 @@
 | 通义千问 | `/qwen/v1/` | `https://dashscope.aliyuncs.com/compatible-mode` |
 | OpenCode Go | `/opencode/v1/` | `https://opencode.ai/zen/go` |
 | 硅基流动 | `/siliconflow/v1/` | `https://api.siliconflow.cn` |
-| 阿里云 | `/aliyun/v1/` | `https://dashscope.aliyuncs.com/compatible-mode` |
+| 阿里云 | `/aliyun/v1/` | `https://coding.dashscope.aliyuncs.com` |
 | 自定义 | `/{自定义名称}/v1/` | 由环境变量配置 |
 
 | 平台 | 部署地址示例 |
@@ -73,7 +73,7 @@
 | `QWEN_API_BASE` | `https://dashscope.aliyuncs.com/compatible-mode` | 通义千问 API 地址 |
 | `OPENCODE_API_BASE` | `https://opencode.ai/zen/go` | OpenCode Go API 地址 |
 | `SILICONFLOW_API_BASE` | `https://api.siliconflow.cn` | 硅基流动 API 地址 |
-| `ALIYUN_API_BASE` | `https://dashscope.aliyuncs.com/compatible-mode` | 阿里云 API 地址 |
+| `ALIYUN_API_BASE` | `https://coding.dashscope.aliyuncs.com` | 阿里云 API 地址 |
 
 ### 自定义 Provider
 
