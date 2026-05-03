@@ -9,7 +9,7 @@
 ## 功能特点
 
 - 多厂商路由: `/{provider}/v1/*` 路径前缀自动映射到对应厂商
-- 内置支持 **MiniMax**、**GLM (智谱)**、**Kimi (月之暗面)**、**DeepSeek**、**OpenAI (GPT)**、**小米 MiMo**、**通义千问**、**OpenCode Go**
+- 内置支持 **MiniMax**、**GLM (智谱)**、**Kimi (月之暗面)**、**DeepSeek**、**OpenAI (GPT)**、**小米 MiMo**、**通义千问**、**OpenCode Go**、**硅基流动**
 - 支持通过环境变量自定义任意厂商（自定义 Provider）
 - 兼容 OpenAI 格式接口 (`/v1/*`) — 默认路由到 MiniMax
 - `Bearer` / `X-API-Key` 认证方式
@@ -28,6 +28,7 @@
 | 小米 MiMo | `/xiaomi/v1/` | `https://api.xiaomimimo.com` |
 | 通义千问 | `/qwen/v1/` | `https://dashscope.aliyuncs.com/compatible-mode` |
 | OpenCode Go | `/opencode/v1/` | `https://opencode.ai/zen/go` |
+| 硅基流动 | `/siliconflow/v1/` | `https://api.siliconflow.cn` |
 | 自定义 | `/{自定义名称}/v1/` | 由环境变量配置 |
 
 | 平台 | 部署地址示例 |
@@ -70,6 +71,7 @@
 | `XIAOMI_API_BASE` | `https://api.xiaomimimo.com` | 小米 MiMo API 地址 |
 | `QWEN_API_BASE` | `https://dashscope.aliyuncs.com/compatible-mode` | 通义千问 API 地址 |
 | `OPENCODE_API_BASE` | `https://opencode.ai/zen/go` | OpenCode Go API 地址 |
+| `SILICONFLOW_API_BASE` | `https://api.siliconflow.cn` | 硅基流动 API 地址 |
 
 ### 自定义 Provider
 
@@ -132,6 +134,12 @@ curl --request POST 'https://maxapi.vercel.app/opencode/v1/chat/completions' \
   --header 'authorization: Bearer xxxxxxxxxx' \
   --data '{"model":"glm-4-plus","messages":[{"role":"user","content":"Hello"}]}'
 
+# 硅基流动
+curl --request POST 'https://maxapi.vercel.app/siliconflow/v1/chat/completions' \
+  --header 'content-type: application/json' \
+  --header 'authorization: Bearer xxxxxxxxxx' \
+  --data '{"model":"Qwen/Qwen2.5-7B-Instruct","messages":[{"role":"user","content":"Hello"}]}'
+
 # 自定义 Provider（需配置 CUSTOM_PROVIDER_1_NAME=mole + CUSTOM_PROVIDER_1_API_BASE）
 curl --request POST 'https://maxapi.vercel.app/mole/v1/chat/completions' \
   --header 'content-type: application/json' \
@@ -184,6 +192,17 @@ client = OpenAI(
 )
 response = client.chat.completions.create(
     model="glm-4-plus",
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+print(response.choices[0].message.content)
+
+# 硅基流动
+client = OpenAI(
+    base_url="https://maxapi.vercel.app/siliconflow/v1",
+    api_key="your-siliconflow-key"
+)
+response = client.chat.completions.create(
+    model="Qwen/Qwen2.5-7B-Instruct",
     messages=[{"role": "user", "content": "Hello!"}]
 )
 print(response.choices[0].message.content)
@@ -249,6 +268,7 @@ openai-proxy/
 - [小米 MiMo 开放平台](https://platform.xiaomimimo.com)
 - [通义千问百炼平台](https://bailian.console.aliyun.com)
 - [OpenCode AI](https://opencode.ai)
+- [硅基流动](https://siliconflow.cn)
 - [Vercel 文档](https://vercel.com/docs)
 - [Cloudflare Workers 文档](https://developers.cloudflare.com/workers/)
 

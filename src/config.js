@@ -9,7 +9,8 @@ export const PROVIDERS = {
   gpt:      { envVar: 'GPT_API_BASE',       default: 'https://api.openai.com' },
   xiaomi:   { envVar: 'XIAOMI_API_BASE',    default: 'https://api.xiaomimimo.com' },
   qwen:     { envVar: 'QWEN_API_BASE',      default: 'https://dashscope.aliyuncs.com/compatible-mode' },
-  opencode: { envVar: 'OPENCODE_API_BASE',  default: 'https://opencode.ai/zen/go' },
+  opencode:    { envVar: 'OPENCODE_API_BASE',       default: 'https://opencode.ai/zen/go' },
+  siliconflow: { envVar: 'SILICONFLOW_API_BASE',    default: 'https://api.siliconflow.cn' },
 };
 
 export { API_BASE, API_BASE_WWW };
