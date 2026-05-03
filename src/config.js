@@ -12,6 +12,7 @@ export const PROVIDERS = {
   opencode:    { envVar: 'OPENCODE_API_BASE',       default: 'https://opencode.ai/zen/go' },
   siliconflow: { envVar: 'SILICONFLOW_API_BASE',    default: 'https://api.siliconflow.cn' },
   aliyun:      { envVar: 'ALIYUN_API_BASE',          default: 'https://coding.dashscope.aliyuncs.com' },
+  volcengine:  { envVar: 'VOLCENGINE_API_BASE',     default: 'https://ark.cn-beijing.volces.com/api/coding/v3' },
 };
 
 export { API_BASE, API_BASE_WWW };

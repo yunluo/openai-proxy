@@ -9,7 +9,7 @@
 ## 功能特点
 
 - 多厂商路由: `/{provider}/v1/*` 路径前缀自动映射到对应厂商
-- 内置支持 **MiniMax**、**GLM (智谱)**、**Kimi (月之暗面)**、**DeepSeek**、**OpenAI (GPT)**、**小米 MiMo**、**通义千问**、**OpenCode Go**、**硅基流动**、**阿里云**
+- 内置支持 **MiniMax**、**GLM (智谱)**、**Kimi (月之暗面)**、**DeepSeek**、**OpenAI (GPT)**、**小米 MiMo**、**通义千问**、**OpenCode Go**、**硅基流动**、**阿里云**、**火山方舟**
 - 支持通过环境变量自定义任意厂商（自定义 Provider）
 - 兼容 OpenAI 格式接口 (`/v1/*`) — 默认路由到 MiniMax
 - `Bearer` / `X-API-Key` 认证方式
@@ -30,6 +30,7 @@
 | OpenCode Go | `/opencode/v1/` | `https://opencode.ai/zen/go` |
 | 硅基流动 | `/siliconflow/v1/` | `https://api.siliconflow.cn` |
 | 阿里云 | `/aliyun/v1/` | `https://coding.dashscope.aliyuncs.com` |
+| 火山方舟 | `/volcengine/v1/` | `https://ark.cn-beijing.volces.com/api/coding/v3` |
 | 自定义 | `/{自定义名称}/v1/` | 由环境变量配置 |
 
 | 平台 | 部署地址示例 |
@@ -74,6 +75,7 @@
 | `OPENCODE_API_BASE` | `https://opencode.ai/zen/go` | OpenCode Go API 地址 |
 | `SILICONFLOW_API_BASE` | `https://api.siliconflow.cn` | 硅基流动 API 地址 |
 | `ALIYUN_API_BASE` | `https://coding.dashscope.aliyuncs.com` | 阿里云 API 地址 |
+| `VOLCENGINE_API_BASE` | `https://ark.cn-beijing.volces.com/api/coding/v3` | 火山方舟 API 地址 |
 
 ### 自定义 Provider
 
@@ -147,6 +149,12 @@ curl --request POST 'https://maxapi.vercel.app/aliyun/v1/chat/completions' \
   --header 'content-type: application/json' \
   --header 'authorization: Bearer xxxxxxxxxx' \
   --data '{"model":"qwen-turbo","messages":[{"role":"user","content":"Hello"}]}'
+
+# 火山方舟
+curl --request POST 'https://maxapi.vercel.app/volcengine/v1/chat/completions' \
+  --header 'content-type: application/json' \
+  --header 'authorization: Bearer xxxxxxxxxx' \
+  --data '{"model":"doubao-1.5-pro-32k","messages":[{"role":"user","content":"Hello"}]}'
 
 # 自定义 Provider（需配置 CUSTOM_PROVIDER_1_NAME=mole + CUSTOM_PROVIDER_1_API_BASE）
 curl --request POST 'https://maxapi.vercel.app/mole/v1/chat/completions' \
@@ -226,6 +234,17 @@ response = client.chat.completions.create(
 )
 print(response.choices[0].message.content)
 
+# 火山方舟
+client = OpenAI(
+    base_url="https://maxapi.vercel.app/volcengine/v1",
+    api_key="your-volcengine-key"
+)
+response = client.chat.completions.create(
+    model="doubao-1.5-pro-32k",
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+print(response.choices[0].message.content)
+
 # 自定义 Provider（需配置 CUSTOM_PROVIDER_1_NAME=mole + CUSTOM_PROVIDER_1_API_BASE）
 client = OpenAI(
     base_url="https://maxapi.vercel.app/mole/v1",
@@ -289,6 +308,7 @@ openai-proxy/
 - [OpenCode AI](https://opencode.ai)
 - [硅基流动](https://siliconflow.cn)
 - [阿里云百炼](https://bailian.console.aliyun.com)
+- [火山方舟](https://www.volcengine.com/product/ark)
 - [Vercel 文档](https://vercel.com/docs)
 - [Cloudflare Workers 文档](https://developers.cloudflare.com/workers/)
 

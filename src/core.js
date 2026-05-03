@@ -32,6 +32,9 @@ function resolveProvider(originalPath, options) {
 
     const provider = options.providers?.[providerName];
     if (provider) {
+      if (providerName === 'volcengine') {
+        return { provider: providerName, targetBase: provider.apiBase, strippedPath: strippedPath || '' };
+      }
       return { provider: providerName, targetBase: provider.apiBase, strippedPath: '/v1' + strippedPath };
     }
 
