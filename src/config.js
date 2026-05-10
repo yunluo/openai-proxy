@@ -20,12 +20,22 @@ export const PROVIDERS = {
     envVar: "GLM_CP_API_BASE",
     default: "https://open.bigmodel.cn/api/coding/paas/v4",
   },
-  kim: { envVar: "KIMI_API_BASE", default: "https://api.moonshot.cn/v1" },
+  kim: {
+    envVar: "KIMI_API_BASE",
+    default: "https://api.moonshot.cn/v1",
+  },
   deepseek: {
     envVar: "DEEPSEEK_API_BASE",
     default: "https://api.deepseek.com/v1",
   },
-  gpt: { envVar: "GPT_API_BASE", default: "https://api.openai.com/v1" },
+  deepseek_anthropic: {
+    envVar: "DEEPSEEK_ANTHROPIC_API_BASE",
+    default: "https://api.deepseek.com/anthropic",
+  },
+  gpt: {
+    envVar: "GPT_API_BASE",
+    default: "https://api.openai.com/v1",
+  },
   xiaomi: {
     envVar: "XIAOMI_API_BASE",
     default: "https://api.xiaomimimo.com/v1",
@@ -40,6 +50,10 @@ export const PROVIDERS = {
   },
   opencode: {
     envVar: "OPENCODE_API_BASE",
+    default: "https://opencode.ai/zen/go/v1",
+  },
+  opencode_anthropic: {
+    envVar: "OPENCODE_ANTHROPIC_API_BASE",
     default: "https://opencode.ai/zen/go/v1",
   },
   siliconflow: {

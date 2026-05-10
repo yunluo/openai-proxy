@@ -9,12 +9,13 @@
 ## 功能特点
 
 - 多厂商路由: `/{provider}/v1/*` 路径前缀自动映射到对应厂商
-- 内置支持 **MiniMax**、**MiniMax Anthropic**、**GLM (智谱)**、**GLM CP (智谱编程)**、**Kimi (月之暗面)**、**DeepSeek**、**OpenAI (GPT)**、**小米 MiMo**、**小米 MiMo CP**、**通义千问**、**OpenCode Go**、**硅基流动**、**阿里云**、**火山方舟**
+- 内置支持 **MiniMax**、**MiniMax Anthropic**、**GLM (智谱)**、**GLM CP (智谱编程)**、**Kimi (月之暗面)**、**DeepSeek**、**DeepSeek Anthropic**、**OpenAI (GPT)**、**小米 MiMo**、**小米 MiMo CP**、**通义千问**、**OpenCode Go**、**OpenCode Go Anthropic**、**硅基流动**、**阿里云**、**火山方舟**
 - 支持通过环境变量自定义任意厂商（自定义 Provider）
 - 兼容 OpenAI 格式接口 (`/v1/*`) — 默认路由到 MiniMax
 - `Bearer` / `X-API-Key` 认证方式
 - API Key 由客户端提供（安全可靠）
 - 全球边缘加速（Vercel / Cloudflare Workers）
+- **OpenCode Go Anthropic** 自动完成 Anthropic ↔ OpenAI 格式互转
 
 ## API 端点
 
@@ -26,11 +27,13 @@
 | 智谱 GLM CP (编程) | `/glm_cp/v1/` | `https://open.bigmodel.cn/api/coding/paas/v4` |
 | Kimi 月之暗面 | `/kim/v1/` | `https://api.moonshot.cn/v1` |
 | DeepSeek | `/deepseek/v1/` | `https://api.deepseek.com/v1` |
+| DeepSeek Anthropic | `/deepseek_anthropic/v1/` | `https://api.deepseek.com/anthropic` |
 | OpenAI GPT | `/gpt/v1/` | `https://api.openai.com/v1` |
 | 小米 MiMo | `/xiaomi/v1/` | `https://api.xiaomimimo.com/v1` |
 | 小米 MiMo CP | `/xiaomi_cp/v1/` | `https://token-plan-cn.xiaomimimo.com/v1` |
 | 通义千问 | `/qwen/v1/` | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
 | OpenCode Go | `/opencode/v1/` | `https://opencode.ai/zen/go/v1` |
+| OpenCode Go Anthropic | `/opencode_anthropic/v1/` | `https://opencode.ai/zen/go/v1`（自动格式互转） |
 | 硅基流动 | `/siliconflow/v1/` | `https://api.siliconflow.cn/v1` |
 | 阿里云 | `/aliyun/v1/` | `https://coding.dashscope.aliyuncs.com/v1` |
 | 火山方舟 | `/volcengine/v1/` | `https://ark.cn-beijing.volces.com/api/coding/v3` |
@@ -74,11 +77,13 @@
 | `GLM_CP_API_BASE` | `https://open.bigmodel.cn/api/coding/paas/v4` | 智谱编程 API 地址 |
 | `KIMI_API_BASE` | `https://api.moonshot.cn/v1` | Kimi API 地址 |
 | `DEEPSEEK_API_BASE` | `https://api.deepseek.com/v1` | DeepSeek API 地址 |
+| `DEEPSEEK_ANTHROPIC_API_BASE` | `https://api.deepseek.com/anthropic` | DeepSeek Anthropic 兼容端点地址 |
 | `GPT_API_BASE` | `https://api.openai.com/v1` | OpenAI API 地址 |
 | `XIAOMI_API_BASE` | `https://api.xiaomimimo.com/v1` | 小米 MiMo API 地址 |
 | `XIAOMI_CP_API_BASE` | `https://token-plan-cn.xiaomimimo.com/v1` | 小米 MiMo CP API 地址 |
 | `QWEN_API_BASE` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 通义千问 API 地址 |
 | `OPENCODE_API_BASE` | `https://opencode.ai/zen/go/v1` | OpenCode Go API 地址 |
+| `OPENCODE_ANTHROPIC_API_BASE` | `https://opencode.ai/zen/go/v1` | OpenCode Go Anthropic 兼容端点地址 |
 | `SILICONFLOW_API_BASE` | `https://api.siliconflow.cn/v1` | 硅基流动 API 地址 |
 | `ALIYUN_API_BASE` | `https://coding.dashscope.aliyuncs.com/v1` | 阿里云 API 地址 |
 | `VOLCENGINE_API_BASE` | `https://ark.cn-beijing.volces.com/api/coding/v3` | 火山方舟 API 地址 |
@@ -99,8 +104,9 @@
 
 ### 认证方式
 
-- **OpenAI 兼容端点**（MiniMax、GLM、DeepSeek 等）：通过 `Authorization: Bearer <your-api-key>` 传递 API Key
-- **Anthropic 兼容端点**（MiniMax Anthropic）：通过 `X-API-Key: <your-api-key>` 传递 API Key，代理会自动将其转发为 `x-api-key` 头，并透传 `anthropic-version` 等 Anthropic 专用头
+- **OpenAI 兼容端点**（MiniMax、GLM、DeepSeek、OpenCode Go 等）：通过 `Authorization: Bearer <your-api-key>` 传递 API Key
+- **Anthropic 原生端点**（MiniMax Anthropic、DeepSeek Anthropic）：通过 `X-API-Key: <your-api-key>` 传递 API Key，代理透传 `x-api-key` 头及 `anthropic-version` 等 Anthropic 专用头
+- **OpenCode Go Anthropic**（格式互转）：客户端通过 `X-API-Key: <your-api-key>` 认证，代理自动将 Anthropic Messages 格式转换为 OpenAI Chat Completions 格式后以 `Bearer` 方式转发至 OpenCode Go，响应再转换回 Anthropic 格式返回
 
 ## 使用示例
 
@@ -138,6 +144,13 @@ curl --request POST 'https://maxapi.vercel.app/deepseek/v1/chat/completions' \
   --header 'authorization: Bearer xxxxxxxxxx' \
   --data '{"model":"deepseek-chat","messages":[{"role":"user","content":"Hello"}]}'
 
+# DeepSeek Anthropic 兼容端点（使用 x-api-key 认证）
+curl --request POST 'https://maxapi.vercel.app/deepseek_anthropic/v1/messages' \
+  --header 'content-type: application/json' \
+  --header 'x-api-key: xxxxxxxxxx' \
+  --header 'anthropic-version: 2023-06-01' \
+  --data '{"model":"deepseek-v4-pro","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}'
+
 # OpenAI GPT
 curl --request POST 'https://maxapi.vercel.app/gpt/v1/chat/completions' \
   --header 'content-type: application/json' \
@@ -161,6 +174,13 @@ curl --request POST 'https://maxapi.vercel.app/opencode/v1/chat/completions' \
   --header 'content-type: application/json' \
   --header 'authorization: Bearer xxxxxxxxxx' \
   --data '{"model":"glm-4-plus","messages":[{"role":"user","content":"Hello"}]}'
+
+# OpenCode Go Anthropic（自动格式互转，可用任意 OpenCode Go 支持的模型）
+curl --request POST 'https://maxapi.vercel.app/opencode_anthropic/v1/messages' \
+  --header 'content-type: application/json' \
+  --header 'x-api-key: xxxxxxxxxx' \
+  --header 'anthropic-version: 2023-06-01' \
+  --data '{"model":"deepseek-v4-pro","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}'
 
 # 硅基流动
 curl --request POST 'https://maxapi.vercel.app/siliconflow/v1/chat/completions' \
@@ -294,6 +314,32 @@ message = client.messages.create(
 )
 print(message.content[0].text)
 
+# DeepSeek Anthropic 兼容端点（使用 Anthropic Python SDK）
+from anthropic import Anthropic
+client = Anthropic(
+    base_url="https://maxapi.vercel.app/deepseek_anthropic/v1",
+    api_key="your-deepseek-key"
+)
+message = client.messages.create(
+    model="deepseek-v4-pro",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+print(message.content[0].text)
+
+# OpenCode Go Anthropic（自动格式互转，可用任意 OpenCode Go 支持的模型）
+from anthropic import Anthropic
+client = Anthropic(
+    base_url="https://maxapi.vercel.app/opencode_anthropic/v1",
+    api_key="your-opencode-go-key"
+)
+message = client.messages.create(
+    model="deepseek-v4-pro",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+print(message.content[0].text)
+
 # 智谱 GLM CP (编程)
 client = OpenAI(
     base_url="https://maxapi.vercel.app/glm_cp/v1",
@@ -344,7 +390,7 @@ openai-proxy/
 ├── workers/
 │   └── index.js      # Cloudflare Workers 适配器
 ├── src/
-│   ├── core.js       # 共享核心代理逻辑（多厂商路由）
+│   ├── core.js       # 共享核心代理逻辑（多厂商路由 + Anthropic↔OpenAI 格式互转）
 │   └── config.js     # API 配置（内置厂商 + 环境变量）
 ├── public/
 │   └── index.html    # 配置页面
@@ -365,10 +411,13 @@ openai-proxy/
 - 遵守 [MiniMax API 使用条款](https://platform.minimaxi.com/docs/terms)
 - Vercel 免费计划每月提供 100GB 带宽
 - Cloudflare Workers 免费计划每天 100,000 请求
+- **OpenCode Go Anthropic** 端点在代理层完成 Anthropic ↔ OpenAI 格式互转，客户端使用 Anthropic SDK 即可调用 OpenCode Go 的任意模型（DeepSeek V4 Pro、GLM-5、Kimi K2.6 等）
 
 ## 相关链接
 
 - [Anthropic API 文档](https://docs.anthropic.com)
+- [DeepSeek Anthropic API 文档](https://api-docs.deepseek.com/zh-cn/guides/anthropic_api)
+- [OpenCode Go API 文档](https://opencode.ai/docs/zh-cn/go/)
 - [MiniMax 开放平台](https://platform.minimaxi.com)
 - [Token Plan 文档](https://platform.minimaxi.com/docs/token-plan/intro)
 - [智谱 GLM 开放平台](https://open.bigmodel.cn)
