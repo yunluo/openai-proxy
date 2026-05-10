@@ -9,7 +9,7 @@
 ## 功能特点
 
 - 多厂商路由: `/{provider}/v1/*` 路径前缀自动映射到对应厂商
-- 内置支持 **MiniMax**、**GLM (智谱)**、**Kimi (月之暗面)**、**DeepSeek**、**OpenAI (GPT)**、**小米 MiMo**、**通义千问**、**OpenCode Go**、**硅基流动**、**阿里云**、**火山方舟**
+- 内置支持 **MiniMax**、**MiniMax Anthropic**、**GLM (智谱)**、**GLM CP (智谱编程)**、**Kimi (月之暗面)**、**DeepSeek**、**OpenAI (GPT)**、**小米 MiMo**、**小米 MiMo CP**、**通义千问**、**OpenCode Go**、**硅基流动**、**阿里云**、**火山方舟**
 - 支持通过环境变量自定义任意厂商（自定义 Provider）
 - 兼容 OpenAI 格式接口 (`/v1/*`) — 默认路由到 MiniMax
 - `Bearer` / `X-API-Key` 认证方式
@@ -20,16 +20,19 @@
 
 | 厂商 | 路径前缀 | 目标 API |
 |------|----------|----------|
-| MiniMax | `/minimax/v1/` 或 `/v1/` (默认) | `https://api.minimaxi.com` |
-| 智谱 GLM | `/glm/v1/` | `https://open.bigmodel.cn` |
-| Kimi 月之暗面 | `/kim/v1/` | `https://api.moonshot.cn` |
-| DeepSeek | `/deepseek/v1/` | `https://api.deepseek.com` |
-| OpenAI GPT | `/gpt/v1/` | `https://api.openai.com` |
-| 小米 MiMo | `/xiaomi/v1/` | `https://api.xiaomimimo.com` |
-| 通义千问 | `/qwen/v1/` | `https://dashscope.aliyuncs.com/compatible-mode` |
-| OpenCode Go | `/opencode/v1/` | `https://opencode.ai/zen/go` |
-| 硅基流动 | `/siliconflow/v1/` | `https://api.siliconflow.cn` |
-| 阿里云 | `/aliyun/v1/` | `https://coding.dashscope.aliyuncs.com` |
+| MiniMax | `/minimax/v1/` 或 `/v1/` (默认) | `https://api.minimaxi.com/v1` |
+| MiniMax Anthropic | `/minimax_anthropic/v1/` | `https://api.minimaxi.com/anthropic/v1` |
+| 智谱 GLM | `/glm/v1/` | `https://open.bigmodel.cn/api/paas/v4` |
+| 智谱 GLM CP (编程) | `/glm_cp/v1/` | `https://open.bigmodel.cn/api/coding/paas/v4` |
+| Kimi 月之暗面 | `/kim/v1/` | `https://api.moonshot.cn/v1` |
+| DeepSeek | `/deepseek/v1/` | `https://api.deepseek.com/v1` |
+| OpenAI GPT | `/gpt/v1/` | `https://api.openai.com/v1` |
+| 小米 MiMo | `/xiaomi/v1/` | `https://api.xiaomimimo.com/v1` |
+| 小米 MiMo CP | `/xiaomi_cp/v1/` | `https://token-plan-cn.xiaomimimo.com/v1` |
+| 通义千问 | `/qwen/v1/` | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| OpenCode Go | `/opencode/v1/` | `https://opencode.ai/zen/go/v1` |
+| 硅基流动 | `/siliconflow/v1/` | `https://api.siliconflow.cn/v1` |
+| 阿里云 | `/aliyun/v1/` | `https://coding.dashscope.aliyuncs.com/v1` |
 | 火山方舟 | `/volcengine/v1/` | `https://ark.cn-beijing.volces.com/api/coding/v3` |
 | 自定义 | `/{自定义名称}/v1/` | 由环境变量配置 |
 
@@ -64,17 +67,20 @@
 
 | 变量名 | 默认值 | 说明 |
 |--------|--------|------|
-| `MINIMAX_API_BASE` | `https://api.minimaxi.com` | MiniMax API 地址 |
+| `MINIMAX_API_BASE` | `https://api.minimaxi.com/v1` | MiniMax API 地址 |
+| `MINIMAX_ANTHROPIC_API_BASE` | `https://api.minimaxi.com/anthropic/v1` | MiniMax Anthropic 兼容端点地址 |
 | `MINIMAX_API_BASE_WWW` | `https://www.minimaxi.com` | MiniMax 额度查询地址 |
-| `GLM_API_BASE` | `https://open.bigmodel.cn` | 智谱 API 地址 |
-| `KIMI_API_BASE` | `https://api.moonshot.cn` | Kimi API 地址 |
-| `DEEPSEEK_API_BASE` | `https://api.deepseek.com` | DeepSeek API 地址 |
-| `GPT_API_BASE` | `https://api.openai.com` | OpenAI API 地址 |
-| `XIAOMI_API_BASE` | `https://api.xiaomimimo.com` | 小米 MiMo API 地址 |
-| `QWEN_API_BASE` | `https://dashscope.aliyuncs.com/compatible-mode` | 通义千问 API 地址 |
-| `OPENCODE_API_BASE` | `https://opencode.ai/zen/go` | OpenCode Go API 地址 |
-| `SILICONFLOW_API_BASE` | `https://api.siliconflow.cn` | 硅基流动 API 地址 |
-| `ALIYUN_API_BASE` | `https://coding.dashscope.aliyuncs.com` | 阿里云 API 地址 |
+| `GLM_API_BASE` | `https://open.bigmodel.cn/api/paas/v4` | 智谱 API 地址 |
+| `GLM_CP_API_BASE` | `https://open.bigmodel.cn/api/coding/paas/v4` | 智谱编程 API 地址 |
+| `KIMI_API_BASE` | `https://api.moonshot.cn/v1` | Kimi API 地址 |
+| `DEEPSEEK_API_BASE` | `https://api.deepseek.com/v1` | DeepSeek API 地址 |
+| `GPT_API_BASE` | `https://api.openai.com/v1` | OpenAI API 地址 |
+| `XIAOMI_API_BASE` | `https://api.xiaomimimo.com/v1` | 小米 MiMo API 地址 |
+| `XIAOMI_CP_API_BASE` | `https://token-plan-cn.xiaomimimo.com/v1` | 小米 MiMo CP API 地址 |
+| `QWEN_API_BASE` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 通义千问 API 地址 |
+| `OPENCODE_API_BASE` | `https://opencode.ai/zen/go/v1` | OpenCode Go API 地址 |
+| `SILICONFLOW_API_BASE` | `https://api.siliconflow.cn/v1` | 硅基流动 API 地址 |
+| `ALIYUN_API_BASE` | `https://coding.dashscope.aliyuncs.com/v1` | 阿里云 API 地址 |
 | `VOLCENGINE_API_BASE` | `https://ark.cn-beijing.volces.com/api/coding/v3` | 火山方舟 API 地址 |
 
 ### 自定义 Provider
@@ -93,9 +99,8 @@
 
 ### 认证方式
 
-客户端通过以下任一方式传递 API Key（发送到目标厂商的 `Authorization` 头）：
-- `Authorization: Bearer <your-api-key>`
-- `X-API-Key: <your-api-key>`
+- **OpenAI 兼容端点**（MiniMax、GLM、DeepSeek 等）：通过 `Authorization: Bearer <your-api-key>` 传递 API Key
+- **Anthropic 兼容端点**（MiniMax Anthropic）：通过 `X-API-Key: <your-api-key>` 传递 API Key，代理会自动将其转发为 `x-api-key` 头，并透传 `anthropic-version` 等 Anthropic 专用头
 
 ## 使用示例
 
@@ -108,11 +113,30 @@ curl --request POST 'https://maxapi.vercel.app/v1/chat/completions' \
   --header 'authorization: Bearer xxxxxxxxxx' \
   --data '{"model":"MiniMax-M2.7","messages":[{"role":"user","content":"Hello"}]}'
 
+# MiniMax Anthropic 兼容端点（使用 x-api-key 认证）
+curl --request POST 'https://maxapi.vercel.app/minimax_anthropic/v1/messages' \
+  --header 'content-type: application/json' \
+  --header 'x-api-key: xxxxxxxxxx' \
+  --header 'anthropic-version: 2023-06-01' \
+  --data '{"model":"claude-3-5-sonnet-20241022","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}'
+
 # 智谱 GLM
 curl --request POST 'https://maxapi.vercel.app/glm/v1/chat/completions' \
   --header 'content-type: application/json' \
   --header 'authorization: Bearer xxxxxxxxxx' \
   --data '{"model":"glm-4","messages":[{"role":"user","content":"Hello"}]}'
+
+# Kimi 月之暗面
+curl --request POST 'https://maxapi.vercel.app/kim/v1/chat/completions' \
+  --header 'content-type: application/json' \
+  --header 'authorization: Bearer xxxxxxxxxx' \
+  --data '{"model":"moonshot-v1-8k","messages":[{"role":"user","content":"Hello"}]}'
+
+# DeepSeek
+curl --request POST 'https://maxapi.vercel.app/deepseek/v1/chat/completions' \
+  --header 'content-type: application/json' \
+  --header 'authorization: Bearer xxxxxxxxxx' \
+  --data '{"model":"deepseek-chat","messages":[{"role":"user","content":"Hello"}]}'
 
 # OpenAI GPT
 curl --request POST 'https://maxapi.vercel.app/gpt/v1/chat/completions' \
@@ -155,6 +179,18 @@ curl --request POST 'https://maxapi.vercel.app/volcengine/v1/chat/completions' \
   --header 'content-type: application/json' \
   --header 'authorization: Bearer xxxxxxxxxx' \
   --data '{"model":"doubao-1.5-pro-32k","messages":[{"role":"user","content":"Hello"}]}'
+
+# 智谱 GLM CP (编程)
+curl --request POST 'https://maxapi.vercel.app/glm_cp/v1/chat/completions' \
+  --header 'content-type: application/json' \
+  --header 'authorization: Bearer xxxxxxxxxx' \
+  --data '{"model":"glm-4","messages":[{"role":"user","content":"Hello"}]}'
+
+# 小米 MiMo CP
+curl --request POST 'https://maxapi.vercel.app/xiaomi_cp/v1/chat/completions' \
+  --header 'content-type: application/json' \
+  --header 'authorization: Bearer xxxxxxxxxx' \
+  --data '{"model":"MiMo-8B","messages":[{"role":"user","content":"Hello"}]}'
 
 # 自定义 Provider（需配置 CUSTOM_PROVIDER_1_NAME=mole + CUSTOM_PROVIDER_1_API_BASE）
 curl --request POST 'https://maxapi.vercel.app/mole/v1/chat/completions' \
@@ -245,6 +281,41 @@ response = client.chat.completions.create(
 )
 print(response.choices[0].message.content)
 
+# MiniMax Anthropic 兼容端点（使用 Anthropic Python SDK）
+from anthropic import Anthropic
+client = Anthropic(
+    base_url="https://maxapi.vercel.app/minimax_anthropic/v1",
+    api_key="your-minimax-key"
+)
+message = client.messages.create(
+    model="claude-3-5-sonnet-20241022",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+print(message.content[0].text)
+
+# 智谱 GLM CP (编程)
+client = OpenAI(
+    base_url="https://maxapi.vercel.app/glm_cp/v1",
+    api_key="your-glm-key"
+)
+response = client.chat.completions.create(
+    model="glm-4",
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+print(response.choices[0].message.content)
+
+# 小米 MiMo CP
+client = OpenAI(
+    base_url="https://maxapi.vercel.app/xiaomi_cp/v1",
+    api_key="your-xiaomi-key"
+)
+response = client.chat.completions.create(
+    model="MiMo-8B",
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+print(response.choices[0].message.content)
+
 # 自定义 Provider（需配置 CUSTOM_PROVIDER_1_NAME=mole + CUSTOM_PROVIDER_1_API_BASE）
 client = OpenAI(
     base_url="https://maxapi.vercel.app/mole/v1",
@@ -297,6 +368,7 @@ openai-proxy/
 
 ## 相关链接
 
+- [Anthropic API 文档](https://docs.anthropic.com)
 - [MiniMax 开放平台](https://platform.minimaxi.com)
 - [Token Plan 文档](https://platform.minimaxi.com/docs/token-plan/intro)
 - [智谱 GLM 开放平台](https://open.bigmodel.cn)
