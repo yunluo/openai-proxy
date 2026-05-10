@@ -1,5 +1,5 @@
 import { handleProxyRequest } from "../src/core.js";
-import { API_BASE, API_BASE_WWW, PROVIDERS } from "../src/config.js";
+import { API_BASE_WWW, PROVIDERS } from "../src/config.js";
 
 // 从环境变量中加载自定义服务商配置（最多 100 个）
 function loadCustomProviders(env) {
@@ -31,44 +31,60 @@ function buildOptions(env) {
   };
 }
 
+// CORS 头常量
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+  "Access-Control-Allow-Headers":
+    "Content-Type, Authorization, x-api-key, anthropic-version, anthropic-beta, anthropic-dangerous-direct-browser-access",
+};
+
+// 安全地为 Response 添加 CORS 头
+// 对于 fetch 返回的响应，headers 可能是只读的，需要重建 Response
+// 对于我们创建的响应，headers 可直接修改
+function withCORS(response) {
+  const newHeaders = new Headers(response.headers);
+  for (const [key, value] of Object.entries(CORS_HEADERS)) {
+    newHeaders.set(key, value);
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: newHeaders,
+  });
+}
+
 // Cloudflare Workers 入口
 // 原生 Web Standard API，request 直接传入 core.js
 export default {
   async fetch(request, env) {
-    // 设置 CORS 跨域头
+    // OPTIONS 预检请求直接返回
     if (request.method === "OPTIONS") {
-      return new Response(null, {
-        status: 200,
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-          "Access-Control-Allow-Headers":
-            "Content-Type, Authorization, x-api-key",
-        },
-      });
+      return new Response(null, { status: 200, headers: CORS_HEADERS });
     }
 
     const options = buildOptions(env);
 
     try {
-      // 直接返回 Web Response，Cloudflare Workers 原生支持
-      return await handleProxyRequest(request, options);
+      return withCORS(await handleProxyRequest(request, options));
     } catch (error) {
       console.error("LLM Proxy Error:", error);
-      return new Response(
-        JSON.stringify({
-          error: {
-            type: "internal_error",
-            message:
-              error instanceof Error
-                ? error.message
-                : "An error occurred while processing your request.",
+      return withCORS(
+        new Response(
+          JSON.stringify({
+            error: {
+              type: "internal_error",
+              message:
+                error instanceof Error
+                  ? error.message
+                  : "An error occurred while processing your request.",
+            },
+          }),
+          {
+            status: 500,
+            headers: { "Content-Type": "application/json" },
           },
-        }),
-        {
-          status: 500,
-          headers: { "Content-Type": "application/json" },
-        },
+        ),
       );
     }
   },

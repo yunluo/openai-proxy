@@ -1,5 +1,3 @@
-// MiniMax 基础 API 地址（通用接口）
-const API_BASE = "https://api.minimaxi.com";
 // MiniMax 官网 API 地址（套餐/额度相关接口）
 const API_BASE_WWW = "https://www.minimaxi.com";
 
@@ -9,6 +7,10 @@ export const PROVIDERS = {
   minimax: {
     envVar: "MINIMAX_API_BASE",
     default: "https://api.minimaxi.com/v1",
+  },
+  minimax_anthropic: {
+    envVar: "MINIMAX_ANTHROPIC_API_BASE",
+    default: "https://api.minimaxi.com/anthropic/v1",
   },
   glm: {
     envVar: "GLM_API_BASE",
@@ -54,4 +56,4 @@ export const PROVIDERS = {
   },
 };
 
-export { API_BASE, API_BASE_WWW };
+export { API_BASE_WWW };

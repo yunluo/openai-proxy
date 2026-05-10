@@ -3,7 +3,11 @@ function getHeader(headers, name) {
   if (typeof headers.get === "function") {
     return headers.get(name);
   }
-  return headers[name] || headers[name.toLowerCase()];
+  const lower = name.toLowerCase();
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === lower) return headers[key];
+  }
+  return undefined;
 }
 
 // 从请求中解析 JSON 请求体（兼容 Web Request 和普通对象）
@@ -56,17 +60,16 @@ function resolveProvider(originalPath, options) {
 }
 
 export async function handleProxyRequest(request, options = {}) {
-  const headers = {
-    "Content-Type": "application/json",
-  };
-
   // 统一处理相对路径（Vercel）和完整 URL（Cloudflare Workers）
-  const urlPath = new URL(request.url, "http://localhost").pathname;
-  const originalPath = urlPath || "/chat/completions";
+  const parsedUrl = new URL(request.url, "http://localhost");
+  const originalPath = parsedUrl.pathname;
+  const search = parsedUrl.search; // preserve query string
 
-  // 从请求头中提取 API Key
+  // 从请求头中提取 API Key（兼容 OpenAI Bearer 和 Anthropic x-api-key）
+  const authHeader = getHeader(request.headers, "authorization");
   const apiKey =
-    getHeader(request.headers, "authorization")?.replace("Bearer ", "") ||
+    authHeader?.replace(/^Bearer\s+/i, "") ||
+    authHeader ||
     getHeader(request.headers, "x-api-key");
 
   if (!apiKey) {
@@ -81,8 +84,6 @@ export async function handleProxyRequest(request, options = {}) {
       { status: 401, headers: { "Content-Type": "application/json" } },
     );
   }
-
-  headers["Authorization"] = `Bearer ${apiKey}`;
 
   // 解析目标 provider 和实际路径
   const resolved = resolveProvider(originalPath, options);
@@ -111,13 +112,41 @@ export async function handleProxyRequest(request, options = {}) {
     );
   }
 
-  // 拼接目标 URL = provider 的基础地址 + 实际请求路径
-  const targetUrl = `${resolved.targetBase}${resolved.strippedPath}`;
+  // 构建转发请求头（根据目标 provider 类型选择认证方式）
+  const headers = {
+    "Content-Type": "application/json",
+  };
 
-  // 读取请求体（仅 POST/PUT/PATCH）
+  if (resolved.provider === "minimax_anthropic") {
+    // Anthropic 兼容端点：使用 x-api-key 认证，透传 Anthropic 专用头
+    headers["x-api-key"] = apiKey;
+    const anthropicVersion = getHeader(request.headers, "anthropic-version");
+    if (anthropicVersion) {
+      headers["anthropic-version"] = anthropicVersion;
+    }
+    const anthropicBeta = getHeader(request.headers, "anthropic-beta");
+    if (anthropicBeta) {
+      headers["anthropic-beta"] = anthropicBeta;
+    }
+    const anthropicDangerous = getHeader(
+      request.headers,
+      "anthropic-dangerous-direct-browser-access",
+    );
+    if (anthropicDangerous) {
+      headers["anthropic-dangerous-direct-browser-access"] = anthropicDangerous;
+    }
+  } else {
+    // OpenAI 兼容端点：使用 Authorization Bearer 认证
+    headers["Authorization"] = `Bearer ${apiKey}`;
+  }
+
+  // 拼接目标 URL = provider 的基础地址 + 实际请求路径
+  const targetUrl = `${resolved.targetBase}${resolved.strippedPath}${search}`;
+
+  // 读取请求体（非 GET/HEAD 方法）
   let body = null;
   let requestBodyObj = {};
-  if (["POST", "PUT", "PATCH"].includes(request.method)) {
+  if (!["GET", "HEAD"].includes(request.method)) {
     requestBodyObj = await getRequestBody(request);
     body = JSON.stringify(requestBodyObj);
   }
@@ -130,17 +159,21 @@ export async function handleProxyRequest(request, options = {}) {
   });
 
   const contentType = response.headers.get("content-type");
-  const isStreaming = requestBodyObj.stream !== false;
+  const isStreaming = requestBodyObj.stream === true;
 
-  // SSE 流式响应 → 直接透传
-  if (isStreaming && contentType?.includes("text/event-stream")) {
+  // SSE 流式响应 → 保留上游头并覆盖 Content-Type
+  if (
+    isStreaming &&
+    contentType?.includes("text/event-stream") &&
+    response.body
+  ) {
+    const streamHeaders = new Headers(response.headers);
+    streamHeaders.set("Content-Type", "text/event-stream");
+    streamHeaders.set("Cache-Control", "no-cache");
+    streamHeaders.delete("Connection");
     return new Response(response.body, {
       status: response.status,
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-      },
+      headers: streamHeaders,
     });
   }
 
