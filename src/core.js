@@ -575,6 +575,27 @@ function resolveProvider(originalPath, options) {
   };
 }
 
+// 构建模型列表响应（OpenAI /v1/models 格式）
+function buildModelsResponse(options) {
+  const models = [];
+  for (const [name, cfg] of Object.entries(options.providers || {})) {
+    if (!cfg.apiBase) continue;
+    models.push({
+      id: name,
+      object: "model",
+      created: 1683728000,
+      owned_by: name,
+      permission: [],
+      root: name,
+      parent: null,
+    });
+  }
+  return {
+    object: "list",
+    data: models,
+  };
+}
+
 // ──────────────────────────────────────────────
 // 主代理请求处理函数
 // ──────────────────────────────────────────────
@@ -606,6 +627,15 @@ export async function handleProxyRequest(request, options = {}) {
 
   // 解析目标 provider 和实际路径
   const resolved = resolveProvider(originalPath, options);
+
+  // /v1/models 端点：返回代理支持的模型列表（需要认证）
+  // 仅匹配裸路径 /v1/models，带 provider 前缀的路径（如 /deepseek/v1/models）应代理到上游
+  if (originalPath === "/v1/models") {
+    return new Response(JSON.stringify(buildModelsResponse(options)), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
 
   if (resolved.error) {
     return new Response(

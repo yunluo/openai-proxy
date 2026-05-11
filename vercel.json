@@ -1,11 +1,10 @@
 {
   "version": 2,
-  "builds": [
-    {
-      "src": "vercel/**/*.js",
-      "use": "@vercel/node"
+  "functions": {
+    "vercel/index.js": {
+      "runtime": "@vercel/node"
     }
-  ],
+  },
   "routes": [
     {
       "src": "/v1/(.*)",
@@ -22,10 +21,6 @@
     {
       "src": "/([^/]+)/(.*)",
       "dest": "/vercel/index.js"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/public/$1"
     }
   ]
 }
