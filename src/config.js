@@ -68,6 +68,18 @@ export const PROVIDERS = {
     envVar: "VOLCENGINE_API_BASE",
     default: "https://ark.cn-beijing.volces.com/api/coding/v3",
   },
+  openrouter: {
+    envVar: "OPENROUTER_API_BASE",
+    default: "https://openrouter.ai/api/v1",
+  },
+  kilo: {
+    envVar: "KILO_API_BASE",
+    default: "https://api.kilo.ai/api/gateway",
+  },
+  opencode_zen: {
+    envVar: "OPENCODE_ZEN_API_BASE",
+    default: "https://opencode.ai/zen/v1",
+  },
 };
 
 export { API_BASE_WWW };

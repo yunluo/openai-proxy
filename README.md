@@ -37,6 +37,9 @@
 | 硅基流动 | `/siliconflow/v1/` | `https://api.siliconflow.cn/v1` |
 | 阿里云 | `/aliyun/v1/` | `https://coding.dashscope.aliyuncs.com/v1` |
 | 火山方舟 | `/volcengine/v1/` | `https://ark.cn-beijing.volces.com/api/coding/v3` |
+| OpenRouter | `/openrouter/v1/` | `https://openrouter.ai/api/v1` |
+| Kilo | `/kilo/v1/` | `https://api.kilo.ai/api/gateway` |
+| OpenCode Zen | `/opencode_zen/v1/` | `https://opencode.ai/zen/v1` |
 | 自定义 | `/{自定义名称}/v1/` | 由环境变量配置 |
 
 | 平台 | 部署地址示例 |
@@ -87,6 +90,9 @@
 | `SILICONFLOW_API_BASE` | `https://api.siliconflow.cn/v1` | 硅基流动 API 地址 |
 | `ALIYUN_API_BASE` | `https://coding.dashscope.aliyuncs.com/v1` | 阿里云 API 地址 |
 | `VOLCENGINE_API_BASE` | `https://ark.cn-beijing.volces.com/api/coding/v3` | 火山方舟 API 地址 |
+| `OPENROUTER_API_BASE` | `https://openrouter.ai/api/v1` | OpenRouter API 地址 |
+| `KILO_API_BASE` | `https://api.kilo.ai/api/gateway` | Kilo API 地址 |
+| `OPENCODE_ZEN_API_BASE` | `https://opencode.ai/zen/v1` | OpenCode Zen API 地址 |
 
 ### 自定义 Provider
 
