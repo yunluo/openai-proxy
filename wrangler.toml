@@ -1,4 +1,4 @@
-name = "maxapi"
+name = "mxapi"
 main = "workers/index.js"
 compatibility_date = "2024-01-01"
 
