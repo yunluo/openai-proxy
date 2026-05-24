@@ -1,4 +1,4 @@
-name = "openai-proxy"
+name = "maxapi"
 main = "workers/index.js"
 compatibility_date = "2024-01-01"
 
