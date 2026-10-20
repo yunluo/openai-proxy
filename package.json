@@ -1,16 +1,22 @@
 {
-  "name": "minimax-coding-plan-proxy",
+  "name": "multi-provider-api-proxy",
   "version": "1.0.0",
   "description": "LLM Proxy - supports Vercel and Cloudflare Workers",
   "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
   "devDependencies": {
     "wrangler": "^3.0.0"
   },
   "scripts": {
-    "dev": "vercel dev",
+    "test": "node --test",
+    "test:bun": "bun test",
+    "dev": "npx vercel dev",
     "dev:cf": "wrangler dev",
-    "build": "vercel build",
-    "deploy": "vercel --prod",
+    "build": "npx vercel build",
+    "deploy": "npx vercel --prod",
     "deploy:cf": "wrangler deploy"
   }
 }

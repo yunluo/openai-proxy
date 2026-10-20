@@ -9,13 +9,14 @@
 ## 功能特点
 
 - 多厂商路由: `/{provider}/v1/*` 路径前缀自动映射到对应厂商
-- 内置支持 **MiniMax**、**MiniMax Anthropic**、**GLM (智谱)**、**GLM CP (智谱编程)**、**Kimi (月之暗面)**、**DeepSeek**、**DeepSeek Anthropic**、**OpenAI (GPT)**、**小米 MiMo**、**小米 MiMo CP**、**通义千问**、**OpenCode Go**、**OpenCode Go Anthropic**、**硅基流动**、**阿里云**、**火山方舟**
+- 内置支持 **MiniMax**、**MiniMax Anthropic**、**GLM (智谱)**、**GLM CP (智谱编程)**、**Kimi (月之暗面)**、**DeepSeek**、**DeepSeek Anthropic**、**OpenAI (GPT)**、**小米 MiMo**、**小米 MiMo CP**、**通义千问**、**OpenCode Go**、**OpenCode Go Anthropic**、**硅基流动**、**阿里云**、**火山方舟**、**OpenRouter**、**Kilo**、**OpenCode Zen**
 - 支持通过环境变量自定义任意厂商（自定义 Provider）
 - 兼容 OpenAI 格式接口 (`/v1/*`) — 默认路由到 MiniMax
 - `Bearer` / `X-API-Key` 认证方式
 - API Key 由客户端提供（安全可靠）
 - 全球边缘加速（Vercel / Cloudflare Workers）
 - **OpenCode Go Anthropic** 自动完成 Anthropic ↔ OpenAI 格式互转
+- `GET /v1/models` 返回代理内置的厂商列表
 
 ## API 端点
 
@@ -41,6 +42,9 @@
 | Kilo | `/kilo/v1/` | `https://api.kilo.ai/api/gateway` |
 | OpenCode Zen | `/opencode_zen/v1/` | `https://opencode.ai/zen/v1` |
 | 自定义 | `/{自定义名称}/v1/` | 由环境变量配置 |
+| 额度 / 套餐查询 | `/token_plan/*`、`/coding_plan/*` | `https://www.minimaxi.com`（**保留路径前缀**） |
+| 模型列表 | `GET /v1/models` | 由代理本地返回，不转发上游 |
+| OpenCode Zen Go 的 `x-opencode-session` | 任意 | 代理会按白名单透传 `x-opencode-session`、`HTTP-Referer`、`X-Title` |
 
 | 平台 | 部署地址示例 |
 |------|-------------|
@@ -80,7 +84,7 @@
 | `GLM_CP_API_BASE` | `https://open.bigmodel.cn/api/coding/paas/v4` | 智谱编程 API 地址 |
 | `KIMI_API_BASE` | `https://api.moonshot.cn/v1` | Kimi API 地址 |
 | `DEEPSEEK_API_BASE` | `https://api.deepseek.com/v1` | DeepSeek API 地址 |
-| `DEEPSEEK_ANTHROPIC_API_BASE` | `https://api.deepseek.com/anthropic` | DeepSeek Anthropic 兼容端点地址 |
+| `DEEPSEEK_ANTHROPIC_API_BASE` | `https://api.deepseek.com/anthropic/v1` | DeepSeek Anthropic 兼容端点地址 |
 | `GPT_API_BASE` | `https://api.openai.com/v1` | OpenAI API 地址 |
 | `XIAOMI_API_BASE` | `https://api.xiaomimimo.com/v1` | 小米 MiMo API 地址 |
 | `XIAOMI_CP_API_BASE` | `https://token-plan-cn.xiaomimimo.com/v1` | 小米 MiMo CP API 地址 |
@@ -398,12 +402,28 @@ openai-proxy/
 ├── src/
 │   ├── core.js       # 共享核心代理逻辑（多厂商路由 + Anthropic↔OpenAI 格式互转）
 │   └── config.js     # API 配置（内置厂商 + 环境变量）
-├── public/
-│   └── index.html    # 配置页面
+├── test/
+│   └── core.test.js  # 路由 / 格式互转 / 流式转换测试
 ├── vercel.json       # Vercel 配置（含通用 Provider 路由）
 ├── wrangler.toml     # Cloudflare Workers 配置
 └── package.json      # 项目依赖
 ```
+
+## 开发与测试
+
+```bash
+# 运行测试（Node 18+ 内置测试运行器，或使用 bun）
+npm test
+bun test
+
+# 本地开发
+npm run dev      # Vercel（npx vercel dev）
+npm run dev:cf   # Cloudflare Workers（wrangler dev）
+```
+
+测试覆盖：缺失/空 API Key、provider 路由与查询串、`/token_plan` 前缀保留、未知 provider 与 `__proto__`、
+multipart 原样透传、非法 JSON 返回 400、上游错误码/响应头保留、Anthropic ↔ OpenAI 双向转换
+（tool_result 顺序、`tool_choice: none`、图片 url、system/stop 映射）、流式事件序列与中途出错处理。
 
 ## 技术栈
 
@@ -414,8 +434,13 @@ openai-proxy/
 ## 注意事项
 
 - 请妥善保管您的 API Key
-- 遵守 [MiniMax API 使用条款](https://platform.minimaxi.com/docs/terms)
-- Vercel 免费计划每月提供 100GB 带宽
+- 严格遵守各厂商的 API 使用条款（含 Anthropic、OpenAI 等）
+- 代理会按白名单透传少量头（`x-opencode-session`、`x-session-id`、`x-session-affinity`、`user-agent`、`HTTP-Referer`、`X-Title`），不会转发 `host`/`cookie` 等敏感头
+- `/opencode` 与 `/opencode_anthropic` 指向 OpenCode **Go** 网关（`zen/go/v1`，与官方文档的 `inference/go/openai/v1` 行为一致），**必须**由客户端携带会话头（`x-opencode-session` / `x-session-id` / `x-session-affinity` 任一），否则上游返回 400 `MissingSessionID`
+- `/opencode_zen`（`zen/v1`）用无效/免费凭据访问时会返回 403 `FreeTierError`：OpenCode 免费层只允许其自家客户端使用（实测伪装 User-Agent 无效），需使用有效订阅凭据
+- 非 JSON 请求体（如 `multipart/form-data` 文件上传）按字节原样透传；声明为 JSON 但解析失败会返回 400
+- 本服务是开放中继（CORS `*`、无内置限流）。生产环境建议在 Cloudflare 侧配置 Rate Limiting，或自行加访问门禁，避免域名/免费额度被滥用
+- Vercel 免费计划每月提供 100GB 带宽（`vercel.json` 中已配置 `maxDuration: 60`，长流式对话请留意套餐上限）
 - Cloudflare Workers 免费计划每天 100,000 请求
 - **OpenCode Go Anthropic** 端点在代理层完成 Anthropic ↔ OpenAI 格式互转，客户端使用 Anthropic SDK 即可调用 OpenCode Go 的任意模型（DeepSeek V4 Pro、GLM-5、Kimi K2.6 等）
 

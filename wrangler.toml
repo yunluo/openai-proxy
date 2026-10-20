@@ -3,21 +3,19 @@ main = "workers/index.js"
 compatibility_date = "2024-01-01"
 
 [vars]
-# MINIMAX_API_KEY 通过 Cloudflare Dashboard 配置
+# API Key 由客户端通过 Authorization / x-api-key 传入，无需在此配置密钥
 
 [observability]
-enabled = false
+enabled = true
 head_sampling_rate = 1
 
 [observability.logs]
 enabled = true
 head_sampling_rate = 1
-persist = true
 invocation_logs = true
 
 [observability.traces]
 enabled = false
-persist = true
 head_sampling_rate = 1
 
 [placement]

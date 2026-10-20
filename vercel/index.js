@@ -2,14 +2,20 @@ import { handleProxyRequest } from "../src/core.js";
 import { API_BASE_WWW, PROVIDERS } from "../src/config.js";
 
 // 从环境变量中加载自定义服务商配置（最多 100 个）
+// 名称只允许 [a-z0-9_-]，避免 __proto__ 之类会污染对象原型的名字
+const CUSTOM_PROVIDER_NAME_RE = /^[a-z0-9][a-z0-9_-]*$/;
+
 function loadCustomProviders(envSource) {
-  const providers = {};
+  const providers = Object.create(null);
   let i = 1;
   while (i <= 100) {
     const name = envSource[`CUSTOM_PROVIDER_${i}_NAME`];
     const apiBase = envSource[`CUSTOM_PROVIDER_${i}_API_BASE`];
     if (!name || !apiBase) break;
-    providers[name.toLowerCase()] = { apiBase };
+    const key = String(name).toLowerCase();
+    if (CUSTOM_PROVIDER_NAME_RE.test(key)) {
+      providers[key] = { apiBase };
+    }
     i++;
   }
   return providers;
@@ -36,14 +42,21 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
   "Access-Control-Allow-Headers":
-    "Content-Type, Authorization, x-api-key, anthropic-version, anthropic-beta, anthropic-dangerous-direct-browser-access",
+    "Content-Type, Authorization, x-api-key, anthropic-version, anthropic-beta, anthropic-dangerous-direct-browser-access, x-opencode-session, x-session-id, x-session-affinity, HTTP-Referer, X-Title",
+  "Access-Control-Expose-Headers":
+    "x-request-id, retry-after, x-ratelimit-limit, x-ratelimit-remaining, x-ratelimit-reset",
 };
+
+// CORS 头名的小写集合（用于判断某个响应头是否已由本适配器设置）
+const CORS_HEADER_NAMES = new Set(
+  Object.keys(CORS_HEADERS).map((key) => key.toLowerCase()),
+);
 
 // 将 Web Response 的头信息写入 Node.js 响应（跳过已设置的 CORS 头）
 function writeHeadersToNodeRes(response, res) {
   response.headers.forEach((value, key) => {
     // 不覆盖已设置在 res 上的 CORS 头
-    if (!CORS_HEADERS[key.toLowerCase()]) {
+    if (!CORS_HEADER_NAMES.has(key.toLowerCase())) {
       res.setHeader(key, value);
     }
   });

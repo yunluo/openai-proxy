@@ -30,7 +30,9 @@ export const PROVIDERS = {
   },
   deepseek_anthropic: {
     envVar: "DEEPSEEK_ANTHROPIC_API_BASE",
-    default: "https://api.deepseek.com/anthropic",
+    // 与 minimax_anthropic 保持一致：基址带上 /v1，客户端路径中的 /v1 会被剥掉，
+    // 最终请求 https://api.deepseek.com/anthropic/v1/messages
+    default: "https://api.deepseek.com/anthropic/v1",
   },
   gpt: {
     envVar: "GPT_API_BASE",
