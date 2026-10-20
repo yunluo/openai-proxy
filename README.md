@@ -2,6 +2,8 @@
 
 一个部署在 Cloudflare Workers 上的多厂商 AI API 反向代理服务，通过 URL 路径前缀将请求路由到不同的 AI 服务商。
 
+<p align="center">我❤️Cloudflare</p>
+
 ## 项目背景
 
 在企业内网环境中，部分 AI 服务商的接口可能受到限制。本项目通过将 AI API 请求代理到企业内网可访问的 Cloudflare Workers 域名，实现曲线访问多个 AI 服务商。
