@@ -507,10 +507,15 @@ function openAIToAnthropic(data, requestModel) {
 
   // 确定 stop_reason
   let stopReason = "end_turn";
-  if (choice?.finish_reason === "tool_calls") {
-    stopReason = "tool_use";
-  } else if (choice?.finish_reason === "length") {
+  if (choice?.finish_reason === "length") {
     stopReason = "max_tokens";
+  } else if (
+    choice?.finish_reason === "tool_calls" ||
+    (message.tool_calls && message.tool_calls.length > 0)
+  ) {
+    // 只要消息里有 tool_use 块，Anthropic 客户端就要求 stop_reason=tool_use，
+    // 否则不会执行工具；finish_reason 缺失时也按内容判断
+    stopReason = "tool_use";
   } else if (
     choice?.finish_reason === "stop" ||
     choice?.finish_reason == null
@@ -805,8 +810,13 @@ async function* openAIStreamToAnthropicSSE(reader, requestModel) {
 
   // 确定 stop_reason（异常时视为 end_turn）
   let stopReason = "end_turn";
-  if (finishReason === "tool_calls") stopReason = "tool_use";
-  else if (finishReason === "length") stopReason = "max_tokens";
+  if (finishReason === "length") {
+    stopReason = "max_tokens";
+  } else if (finishReason === "tool_calls" || toolCallBlockMap.size > 0) {
+    // 流里已经输出过 tool_use 块时，即使上游漏了 finish_reason 也必须告诉
+    // Anthropic 客户端去执行工具（否则会被当成普通 end_turn）
+    stopReason = "tool_use";
+  }
 
   // 事件：message_delta（最终 stop_reason + token 数）
   // message_start 先于 usage 到达，input_tokens 只有在已知时才补报
@@ -849,6 +859,9 @@ function normalizeOpenAIChatSSE(body, idleMs, fallbackModel) {
   let sawFinishReason = false;
   let sawToolCalls = false;
   let sawDone = false;
+  // 上游在流内报错（data: {"error":…} 或非 JSON 的 data 行）：此时不能补成功终止块，
+  // 否则会把失败伪装成正常结束
+  let sawUpstreamError = false;
   let lastId = "";
   let lastModel = fallbackModel || "";
   let lastChoiceIndex = 0;
@@ -883,13 +896,20 @@ function normalizeOpenAIChatSSE(body, idleMs, fallbackModel) {
     }
 
     if (eventData) {
+      let chunk = null;
       try {
-        const chunk = JSON.parse(eventData);
-        if (typeof chunk?.id === "string" && chunk.id) lastId = chunk.id;
-        if (typeof chunk?.model === "string" && chunk.model) {
+        chunk = JSON.parse(eventData);
+      } catch (_) {
+        // 非 JSON 的 data 行原样透传；内容流里出现这种行通常意味着上游报错
+        sawUpstreamError = true;
+      }
+      if (chunk) {
+        if (chunk.error || chunk.type === "error") sawUpstreamError = true;
+        if (typeof chunk.id === "string" && chunk.id) lastId = chunk.id;
+        if (typeof chunk.model === "string" && chunk.model) {
           lastModel = chunk.model;
         }
-        const choices = Array.isArray(chunk?.choices) ? chunk.choices : [];
+        const choices = Array.isArray(chunk.choices) ? chunk.choices : [];
         if (choices.length > 0) sawChoice = true;
         for (const choice of choices) {
           if (!choice) continue;
@@ -900,13 +920,11 @@ function normalizeOpenAIChatSSE(body, idleMs, fallbackModel) {
             sawToolCalls = true;
           }
         }
-      } catch (_) {
-        // 非 JSON 的 data 行原样透传
       }
     }
 
     // [DONE] 之前补终止块：保证结束块出现在所有内容块之后
-    if (isDone && sawChoice && !sawFinishReason) {
+    if (isDone && sawChoice && !sawFinishReason && !sawUpstreamError) {
       emit(controller, buildFinishChunk());
       sawFinishReason = true;
     }
@@ -926,6 +944,7 @@ function normalizeOpenAIChatSSE(body, idleMs, fallbackModel) {
       flush(controller) {
         buffer += decoder.decode();
         if (buffer) handleLine(controller, buffer, true);
+        if (sawUpstreamError) return;
         // 上游连 [DONE] 都没发：补终止块 + [DONE]
         if (sawChoice && !sawFinishReason) {
           emit(controller, buildFinishChunk());
@@ -1335,6 +1354,7 @@ export async function handleProxyRequest(request, options = {}) {
     // OpenAI Chat Completions 流：修复上游缺失的 finish_reason / [DONE]，
     // 否则严格客户端会把正常结束当成中断。Anthropic 原生 SSE 不适用。
     const needsChatStreamFix =
+      response.ok &&
       !resolved.provider.endsWith("_anthropic") &&
       OPENAI_CHAT_COMPLETIONS_PATH_RE.test(targetPath);
     const streamBody = needsChatStreamFix

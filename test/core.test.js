@@ -473,6 +473,39 @@ test("Anthropic → OpenAI：tool_choice none、图片 url、system 与 stop 映
   });
 });
 
+test("opencode_anthropic：上游漏掉 finish_reason 时按 tool_calls 推断 tool_use", async () => {
+  await withUpstream(
+    jsonResponse({
+      id: "chatcmpl-10",
+      choices: [
+        {
+          message: {
+            content: null,
+            tool_calls: [
+              {
+                id: "call_2",
+                type: "function",
+                function: { name: "f", arguments: "{}" },
+              },
+            ],
+          },
+        },
+      ],
+    }),
+    async () => {
+      const res = await handleProxyRequest(
+        proxyRequest("/opencode_anthropic/v1/messages", {
+          body: { model: "m", max_tokens: 8, messages: [] },
+        }),
+        makeOptions(),
+      );
+      const data = await res.json();
+      assert.equal(data.stop_reason, "tool_use");
+      assert.equal(data.content[0].type, "tool_use");
+    },
+  );
+});
+
 test("opencode_anthropic：带尾斜杠的 /messages/ 也能转换路径", async () => {
   await withUpstream(jsonResponse({ ok: true }), async (calls) => {
     const res = await handleProxyRequest(
@@ -548,6 +581,25 @@ test("流式转换：工具调用生成带 input:{} 的 tool_use 块", async () 
     const out = await res.text();
     assert.match(out, /"type":"tool_use","id":"call_1","name":"f","input":\{\}/);
     assert.match(out, /"partial_json":"\{\\"a\\":"/);
+    assert.match(out, /"stop_reason":"tool_use"/);
+  });
+});
+
+test("流式转换：工具调用但上游漏掉 finish_reason 时仍以 tool_use 结束", async () => {
+  const sse =
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"f","arguments":"{}"}}]}}]}\n\n' +
+    "data: [DONE]\n\n";
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/opencode_anthropic/v1/messages", {
+        body: { model: "m", max_tokens: 16, stream: true, messages: [] },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.text();
+    assert.match(out, /"type":"tool_use","id":"call_1","name":"f"/);
     assert.match(out, /"stop_reason":"tool_use"/);
   });
 });
@@ -761,6 +813,200 @@ test("SSE 修复：跨 chunk 拆行也能识别并补齐终止块", async () => 
       assert.ok(out.endsWith('data: [DONE]\n\n'));
     },
   );
+});
+
+test("SSE 修复：上游在流内报错时不补成功终止块", async () => {
+  const sse =
+    'data: {"choices":[{"index":0,"delta":{"content":"partial"}}]}\n\n' +
+    'data: {"error":{"type":"api_error","message":"upstream failed"}}\n\n';
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/opencode/v1/chat/completions", {
+        body: { model: "m", stream: true, messages: [] },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.text();
+    assert.match(out, /upstream failed/);
+    assert.ok(!out.includes('"finish_reason"'));
+    assert.ok(!out.includes("data: [DONE]"));
+  });
+});
+
+test("SSE 修复：非 JSON 的 data 行视为上游报错，不伪造正常结束", async () => {
+  const sse =
+    'data: {"choices":[{"index":0,"delta":{"content":"partial"}}]}\n\n' +
+    "data: upstream overloaded\n\n";
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/opencode/v1/chat/completions", {
+        body: { model: "m", stream: true, messages: [] },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.text();
+    assert.match(out, /upstream overloaded/);
+    assert.ok(!out.includes('"finish_reason"'));
+    assert.ok(!out.includes("data: [DONE]"));
+  });
+});
+
+test("SSE 修复：兼容 CRLF 行结束符，且各事件顺序不变", async () => {
+  const sse =
+    'data: {"id":"chatcmpl-crlf","model":"m","choices":[{"index":0,"delta":{"content":"hi"}}]}\r\n\r\n' +
+    "data: [DONE]\r\n\r\n";
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/opencode/v1/chat/completions", {
+        body: { model: "m", stream: true, messages: [] },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.text();
+    assert.match(out, /"content":"hi"\}\}\]\}\r\n/);
+    assert.match(out, /"finish_reason":"stop"/);
+    assert.ok(
+      out.indexOf('"finish_reason":"stop"') < out.indexOf("data: [DONE]"),
+    );
+    assert.ok(out.endsWith("data: [DONE]\r\n\r\n"));
+  });
+});
+
+test("SSE 修复：边收边转发，不等待整条流结束", async () => {
+  const encoder = new TextEncoder();
+  let releaseTail;
+  const tailGate = new Promise((resolve) => {
+    releaseTail = resolve;
+  });
+  const upstreamBody = new ReadableStream({
+    async start(controller) {
+      controller.enqueue(
+        encoder.encode(
+          'data: {"choices":[{"index":0,"delta":{"content":"first"}}]}\n\n',
+        ),
+      );
+      await tailGate;
+      controller.enqueue(
+        encoder.encode(
+          'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n' +
+            "data: [DONE]\n\n",
+        ),
+      );
+      controller.close();
+    },
+  });
+
+  await withUpstream(
+    new Response(upstreamBody, {
+      headers: { "content-type": "text/event-stream" },
+    }),
+    async () => {
+      const res = await handleProxyRequest(
+        proxyRequest("/opencode/v1/chat/completions", {
+          body: { model: "m", stream: true, messages: [] },
+        }),
+        makeOptions(),
+      );
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let timer;
+      try {
+        const first = await Promise.race([
+          reader.read(),
+          new Promise((_, reject) => {
+            timer = setTimeout(
+              () => reject(new Error("SSE 被整体缓冲，未实时转发")),
+              2000,
+            );
+          }),
+        ]);
+        assert.equal(first.done, false);
+        assert.match(decoder.decode(first.value), /"content":"first"/);
+      } finally {
+        clearTimeout(timer);
+        releaseTail();
+      }
+
+      let rest = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        rest += decoder.decode(value, { stream: true });
+      }
+      rest += decoder.decode();
+      assert.match(rest, /"finish_reason":"stop"/);
+      assert.ok(rest.endsWith("data: [DONE]\n\n"));
+    },
+  );
+});
+
+test("SSE 修复：上游流中途报错时不伪造正常结束", async () => {
+  const encoder = new TextEncoder();
+  const upstreamBody = new ReadableStream({
+    start(controller) {
+      controller.enqueue(
+        encoder.encode(
+          'data: {"choices":[{"index":0,"delta":{"content":"partial"}}]}\n\n',
+        ),
+      );
+      controller.error(new Error("upstream reset"));
+    },
+  });
+
+  await withUpstream(
+    new Response(upstreamBody, {
+      headers: { "content-type": "text/event-stream" },
+    }),
+    async () => {
+      const res = await handleProxyRequest(
+        proxyRequest("/opencode/v1/chat/completions", {
+          body: { model: "m", stream: true, messages: [] },
+        }),
+        makeOptions(),
+      );
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let out = "";
+      let failure = null;
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          out += decoder.decode(value, { stream: true });
+        }
+      } catch (error) {
+        failure = error;
+      }
+      assert.ok(failure instanceof Error);
+      assert.match(failure.message, /upstream reset/);
+      assert.ok(!out.includes('"finish_reason"'));
+    },
+  );
+});
+
+test("SSE 修复：仅作用于 Chat Completions，Responses 等其他 SSE 原样透传", async () => {
+  const sse =
+    'data: {"type":"response.output_text.delta","delta":"hi"}\n\n' +
+    "data: [DONE]\n\n";
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/opencode/v1/responses", {
+        body: { model: "m", stream: true, input: [] },
+      }),
+      makeOptions(),
+    );
+
+    assert.equal(await res.text(), sse);
+  });
 });
 
 test("Anthropic 原生 SSE 不补 OpenAI 的 finish_reason / [DONE]", async () => {
