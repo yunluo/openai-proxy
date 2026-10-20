@@ -126,6 +126,97 @@ function firstUserMessageText(payload) {
   return "";
 }
 
+// 超时相关的默认值（毫秒，0 表示不限制），可由环境变量覆盖
+// - 响应头超时：非流式请求要等上游生成完毕才会返回响应头，所以默认给得较宽，
+//   只用来兜住「连上了但永远不回」的情况
+// - 空闲超时：只在读上游 body 时生效，这么久没有任何新数据就判定上游卡死
+const DEFAULT_UPSTREAM_HEADERS_TIMEOUT_MS = 300000;
+const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 120000;
+
+function toTimeoutMs(value, fallback) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+// 给上游 body 叠加空闲超时：超时就取消上游连接并让流报错（而不是永远挂住）
+function withIdleTimeout(body, idleMs) {
+  if (!body || !idleMs) return body;
+  const reader = body.getReader();
+  return new ReadableStream({
+    async pull(controller) {
+      let timer;
+      try {
+        const result = await Promise.race([
+          reader.read(),
+          new Promise((_, reject) => {
+            timer = setTimeout(
+              () => reject(new Error("Upstream stream idle timeout")),
+              idleMs,
+            );
+          }),
+        ]);
+        if (result.done) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(result.value);
+      } catch (error) {
+        try {
+          await reader.cancel();
+        } catch (_) {
+          // 上游已经结束
+        }
+        controller.error(error);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    },
+    async cancel() {
+      try {
+        await reader.cancel();
+      } catch (_) {
+        // 上游已经结束
+      }
+    },
+  });
+}
+
+// 把上游 body 读成文本（叠加空闲超时）
+async function readUpstreamText(body, idleMs) {
+  const stream = withIdleTimeout(body, idleMs);
+  if (!stream) return "";
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
+}
+
+// 可选的访问口令（PROXY_ACCESS_TOKEN）：设置后所有请求都要带 x-proxy-token，
+// 避免域名被当作开放中继滥用；不设置则完全跳过
+function checkAccessToken(request, options) {
+  const expected = options.accessToken;
+  if (expected === undefined || expected === null || expected === "") return null;
+  const provided = getHeader(request.headers, "x-proxy-token");
+  if (typeof provided === "string" && provided.trim() === String(expected)) {
+    return null;
+  }
+  return new Response(
+    JSON.stringify({
+      error: {
+        type: "invalid_request_error",
+        message: "Missing or invalid x-proxy-token header.",
+      },
+    }),
+    { status: 401, headers: { "Content-Type": "application/json" } },
+  );
+}
+
 // 将上游错误映射为 Anthropic 风格的错误响应，并保留原始状态码
 function anthropicErrorResponse(status, error) {
   const message =
@@ -792,6 +883,10 @@ export async function handleProxyRequest(request, options = {}) {
   const originalPath = parsedUrl.pathname;
   const search = parsedUrl.search; // preserve query string
 
+  // 可选访问口令：先于一切路由与认证检查
+  const denied = checkAccessToken(request, options);
+  if (denied) return denied;
+
   // 从请求头中提取 API Key（兼容 OpenAI Bearer 和 Anthropic x-api-key）
   const authHeader = getHeader(request.headers, "authorization");
   let apiKey = null;
@@ -963,12 +1058,54 @@ export async function handleProxyRequest(request, options = {}) {
 
   const targetUrl = `${base}${targetPath}${search}`;
 
-  // 转发请求到目标 API
-  const response = await fetch(targetUrl, {
-    method: request.method,
-    headers: headers,
-    body: body,
-  });
+  // 超时与空闲检测（可由环境变量 / 调用方覆盖，0 表示不限制）
+  const headersTimeoutMs = toTimeoutMs(
+    options.upstreamTimeoutMs,
+    DEFAULT_UPSTREAM_HEADERS_TIMEOUT_MS,
+  );
+  const idleTimeoutMs = toTimeoutMs(
+    options.streamIdleTimeoutMs,
+    DEFAULT_STREAM_IDLE_TIMEOUT_MS,
+  );
+
+  // 转发请求到目标 API：只在「等响应头」阶段计时，拿到响应头后立即解除，
+  // 这样不会掐断正常的流式长回答，但能兜住永远不回的连接
+  const timeoutController = headersTimeoutMs > 0 ? new AbortController() : null;
+  const headerTimer = timeoutController
+    ? setTimeout(() => timeoutController.abort(), headersTimeoutMs)
+    : null;
+
+  let response;
+  try {
+    response = await fetch(targetUrl, {
+      method: request.method,
+      headers: headers,
+      body: body,
+      ...(timeoutController ? { signal: timeoutController.signal } : {}),
+    });
+  } catch (error) {
+    const timedOut = !!timeoutController?.signal.aborted;
+    // 原始错误只进日志，返回给客户端的消息里不含内部细节
+    console.error(`Upstream fetch failed (${targetUrl}):`, error);
+    return new Response(
+      JSON.stringify({
+        error: {
+          type: timedOut ? "upstream_timeout" : "upstream_unreachable",
+          message: timedOut
+            ? `Upstream ${resolved.provider} did not respond within ${Math.round(
+                headersTimeoutMs / 1000,
+              )}s.`
+            : `Unable to reach upstream ${resolved.provider}.`,
+        },
+      }),
+      {
+        status: timedOut ? 504 : 502,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  } finally {
+    if (headerTimer) clearTimeout(headerTimer);
+  }
 
   const contentType = response.headers.get("content-type");
   // 以上游返回的 Content-Type 为准：只看请求体的 stream 字段会漏掉由 query 参数
@@ -979,7 +1116,7 @@ export async function handleProxyRequest(request, options = {}) {
   if (isSSE) {
     if (isOpenCodeAnthropic) {
       // OpenCode Anthropic：OpenAI SSE → Anthropic SSE 流式转换
-      const reader = response.body.getReader();
+      const reader = withIdleTimeout(response.body, idleTimeoutMs).getReader();
       const stream = new ReadableStream({
         async start(controller) {
           const encoder = new TextEncoder();
@@ -1041,7 +1178,7 @@ export async function handleProxyRequest(request, options = {}) {
     const streamHeaders = copyResponseHeaders(response, "text/event-stream");
     streamHeaders.set("Cache-Control", "no-cache");
     streamHeaders.delete("Connection");
-    return new Response(response.body, {
+    return new Response(withIdleTimeout(response.body, idleTimeoutMs), {
       status: response.status,
       headers: streamHeaders,
     });
@@ -1049,7 +1186,7 @@ export async function handleProxyRequest(request, options = {}) {
 
   // ──── JSON 响应处理 ────
   if (contentType && contentType.includes("application/json")) {
-    const data = await response.json();
+    const data = JSON.parse(await readUpstreamText(response.body, idleTimeoutMs));
 
     // OpenCode Anthropic：OpenAI 响应 → Anthropic 格式
     if (isOpenCodeAnthropic) {
@@ -1086,7 +1223,7 @@ export async function handleProxyRequest(request, options = {}) {
   }
 
   // 其他类型（如纯文本）→ 直接透传
-  const text = await response.text();
+  const text = await readUpstreamText(response.body, idleTimeoutMs);
   return new Response(text, {
     status: response.status,
     headers: copyResponseHeaders(response, contentType || "text/plain"),

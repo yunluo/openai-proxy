@@ -105,6 +105,16 @@
 | `KILO_API_BASE` | `https://api.kilo.ai/api/gateway` | Kilo API 地址 |
 | `OPENCODE_ZEN_API_BASE` | `https://opencode.ai/zen/v1` | OpenCode Zen API 地址 |
 
+### 代理自身配置（可选）
+
+| 变量名 | 默认值 | 说明 |
+|--------|--------|------|
+| `PROXY_ACCESS_TOKEN` | 未设置（不校验） | 设置后所有请求必须带 `x-proxy-token: <口令>`，否则返回 401。用于避免域名被他人当中继滥用 |
+| `UPSTREAM_TIMEOUT_MS` | `300000` | 等上游响应头的超时（毫秒）。非流式请求要等上游生成完才有响应头，所以默认给得宽；超时返回 504 `upstream_timeout` |
+| `STREAM_IDLE_TIMEOUT_MS` | `120000` | 读上游 body 的空闲超时（毫秒）：超过这么久没有任何新数据即判定上游卡死，中断并报错；`0` 表示不限制 |
+
+Claude Code 可通过 `ANTHROPIC_CUSTOM_HEADERS="x-proxy-token: <口令>"` 附带访问口令；OpenAI 兼容客户端一般在自定义 header 里加一项即可。
+
 ### 自定义 Provider
 
 支持通过编号环境变量添加任意数量的自定义厂商：
@@ -446,10 +456,11 @@ multipart 原样透传、非法 JSON 返回 400、上游错误码/响应头保�
 - `/opencode` 与 `/opencode_anthropic` 指向 OpenCode **Go** 网关（`zen/go/v1`，与官方文档的 `inference/go/openai/v1` 行为一致），上游要求携带会话头（`x-opencode-session` / `x-session-id` / `x-session-affinity` 任一），缺失时返回 400 `MissingSessionID`。客户端自带则原样透传；**没带时由代理自动补**：按 `apiKey + model + 首条用户消息` 派生 `ses_<hash>`，同一对话的每一轮都得到同一个 id（保留上游路由与提示缓存亲和），因此 Claude Code 这类不认识该头的客户端可直接使用
 - `/opencode_zen`（`zen/v1`）用无效/免费凭据访问时会返回 403 `FreeTierError`：OpenCode 免费层只允许其自家客户端使用（实测伪装 User-Agent 无效），需使用有效订阅凭据
 - 非 JSON 请求体（如 `multipart/form-data` 文件上传）按字节原样透传；声明为 JSON 但解析失败会返回 400
-- 本服务是开放中继（CORS `*`、无内置限流）。生产环境建议在 Cloudflare 侧配置 Rate Limiting，或自行加访问门禁，避免域名/免费额度被滥用
+- 代理默认是开放中继（CORS `*`、无内置限流）。生产环境建议至少设置 `PROXY_ACCESS_TOKEN`（见上），并在 Cloudflare 侧配置 Rate Limiting，避免域名/免费额度被滥用
+- 上游连接有超时保护：等响应头默认 300 秒（`UPSTREAM_TIMEOUT_MS`），流式空闲默认 120 秒（`STREAM_IDLE_TIMEOUT_MS`）。响应头阶段超时返回 504，网络不可达返回 502；两者都不会把上游的原始错误细节回显给客户端
+- 上游 gzip 响应由运行时（Workers / undici）透明解压，因此转发时已剔除 `content-length` / `content-encoding`，避免客户端按错误的长度或编码解析
 - Vercel 免费计划每月提供 100GB 带宽（`vercel.json` 中已配置 `maxDuration: 60`，长流式对话请留意套餐上限）
-- Cloudflare Workers 免费计划每天 100,000 请求、每次请求 10ms CPU（等待上游的 I/O 不计入 CPU）、同时等待响应头的连接上限 6；HTTP 触发的 Worker 没有总时长上限，流式响应可持续传输（实测 SSE 逐块转发，不会整体缓冲）
-- 上游若对响应做了 gzip，运行时（Workers / undici）会自动解压，因此转发时已剔除 `content-length` / `content-encoding`，避免客户端按错误的长度或编码解析
+- Cloudflare Workers 免费计划每天 100,000 请求、每次请求 10ms CPU（等待上游的 I/O 不计入 CPU）、同时等待响应头的连接上限 6；HTTP 触发的 Worker 没有总时长上限，流式响应可持续传输（实测 SSE 逐块转发，不会整体缓冲）。超大上下文（几百 KB JSON）的解析与重新序列化会吃 CPU，接近 10ms 时需付费计划并显式配置 `[limits] cpu_ms`（该配置仅付费计划支持）
 - **OpenCode Go Anthropic** 端点在代理层完成 Anthropic ↔ OpenAI 格式互转，客户端使用 Anthropic SDK 即可调用 OpenCode Go 的任意模型（DeepSeek V4 Pro、GLM-5、Kimi K2.6 等）
 
 ## 相关链接

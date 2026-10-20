@@ -34,6 +34,10 @@ function buildOptions(env) {
       ...loadCustomProviders(env),
     },
     apiBaseWww: env.MINIMAX_API_BASE_WWW || API_BASE_WWW,
+    // 可选访问口令与超时（见 README「环境变量配置」）
+    accessToken: env.PROXY_ACCESS_TOKEN,
+    upstreamTimeoutMs: env.UPSTREAM_TIMEOUT_MS,
+    streamIdleTimeoutMs: env.STREAM_IDLE_TIMEOUT_MS,
   };
 }
 
@@ -42,7 +46,7 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
   "Access-Control-Allow-Headers":
-    "Content-Type, Authorization, x-api-key, anthropic-version, anthropic-beta, anthropic-dangerous-direct-browser-access, x-opencode-session, x-session-id, x-session-affinity, HTTP-Referer, X-Title",
+    "Content-Type, Authorization, x-api-key, anthropic-version, anthropic-beta, anthropic-dangerous-direct-browser-access, x-opencode-session, x-session-id, x-session-affinity, x-proxy-token, HTTP-Referer, X-Title",
   "Access-Control-Expose-Headers":
     "x-request-id, retry-after, x-ratelimit-limit, x-ratelimit-remaining, x-ratelimit-reset",
 };

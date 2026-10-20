@@ -4,6 +4,12 @@ compatibility_date = "2024-01-01"
 
 [vars]
 # API Key 由客户端通过 Authorization / x-api-key 传入，无需在此配置密钥
+#
+# 可选配置（写在 [vars] 或改用 `wrangler secret put <名字>`）：
+#   PROXY_ACCESS_TOKEN     设置后所有请求必须带 x-proxy-token 头，避免域名被当作开放中继
+#   UPSTREAM_TIMEOUT_MS    等上游响应头的超时，默认 300000（非流式请求要等生成完才有响应头）
+#   STREAM_IDLE_TIMEOUT_MS 流式空闲超时，默认 120000；期间没有任何新数据即判定上游卡死
+#   0 表示不限制
 
 [observability]
 enabled = true
@@ -13,10 +19,6 @@ head_sampling_rate = 1
 enabled = true
 head_sampling_rate = 1
 invocation_logs = true
-
-[observability.traces]
-enabled = false
-head_sampling_rate = 1
 
 [placement]
 # 四种 placement 选项互斥；本代理要访问多个上游（minimax / opencode / openrouter…），

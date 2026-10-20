@@ -142,9 +142,9 @@ test("Vercel: 上游错误状态码与 Retry-After 原样返回", async () => {
   );
 });
 
-test("Vercel: fetch 抛错时返回 500 JSON", async () => {
+test("Vercel: 上游网络错误返回 502 JSON（不再落到 500 internal_error）", async () => {
   const originalError = console.error;
-  console.error = () => {}; // 该用例故意触发 500，屏蔽预期内的日志
+  console.error = () => {}; // 该用例故意触发网络错误，屏蔽预期内的日志
   try {
     await withUpstream(
       () => {
@@ -160,8 +160,8 @@ test("Vercel: fetch 抛错时返回 500 JSON", async () => {
           }),
           res,
         );
-        assert.equal(res.statusCode, 500);
-        assert.equal(JSON.parse(res.text()).error.type, "internal_error");
+        assert.equal(res.statusCode, 502);
+        assert.equal(JSON.parse(res.text()).error.type, "upstream_unreachable");
       },
     );
   } finally {

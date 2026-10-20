@@ -729,3 +729,201 @@ test("会话头：客户端自带的值优先，空白值视为未提供，非 G
     assert.equal(calls[2].headers["x-opencode-session"], undefined);
   });
 });
+
+test("访问口令：设置 PROXY_ACCESS_TOKEN 后，缺 token 或 token 不对都返回 401", async () => {
+  await withUpstream(jsonResponse({ ok: true }), async (calls) => {
+    const options = { ...makeOptions(), accessToken: "secret" };
+
+    const denied = await handleProxyRequest(
+      proxyRequest("/minimax/v1/chat/completions", {
+        body: { model: "m", messages: [] },
+      }),
+      options,
+    );
+    assert.equal(denied.status, 401);
+    assert.match((await denied.json()).error.message, /x-proxy-token/);
+    assert.equal(calls.length, 0);
+
+    const wrong = await handleProxyRequest(
+      proxyRequest("/minimax/v1/chat/completions", {
+        headers: { "x-proxy-token": "nope" },
+        body: { model: "m", messages: [] },
+      }),
+      options,
+    );
+    assert.equal(wrong.status, 401);
+    assert.equal(calls.length, 0);
+
+    const ok = await handleProxyRequest(
+      proxyRequest("/minimax/v1/chat/completions", {
+        headers: { "x-proxy-token": "secret" },
+        body: { model: "m", messages: [] },
+      }),
+      options,
+    );
+    assert.equal(ok.status, 200);
+    assert.equal(calls.length, 1);
+    // 口令不会被转发给上游
+    assert.equal(calls[0].headers["x-proxy-token"], undefined);
+  });
+});
+
+test("访问口令：未设置时不拦截", async () => {
+  await withUpstream(jsonResponse({ ok: true }), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/minimax/v1/chat/completions", {
+        body: { model: "m", messages: [] },
+      }),
+      makeOptions(),
+    );
+    assert.equal(res.status, 200);
+  });
+});
+
+test("上游连不上：返回 502，且不回显内部错误细节", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalError = console.error;
+  console.error = () => {}; // 屏蔽本用例预期内的日志
+  globalThis.fetch = async () => {
+    throw new TypeError("ECONNREFUSED: connect to 10.0.0.1:443 failed");
+  };
+  try {
+    const res = await handleProxyRequest(
+      proxyRequest("/minimax/v1/chat/completions", {
+        body: { model: "m", messages: [] },
+      }),
+      makeOptions(),
+    );
+    const body = await res.json();
+    assert.equal(res.status, 502);
+    assert.equal(body.error.type, "upstream_unreachable");
+    assert.equal(body.error.message, "Unable to reach upstream minimax.");
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.error = originalError;
+  }
+});
+
+test("上游迟迟不回响应头：超时后返回 504", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalError = console.error;
+  console.error = () => {}; // 屏蔽本用例预期内的日志
+  globalThis.fetch = (_url, init = {}) =>
+    new Promise((_resolve, reject) => {
+      // 永不返回响应头，只在被 abort 时结束
+      init.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+    });
+  try {
+    const res = await handleProxyRequest(
+      proxyRequest("/minimax/v1/chat/completions", {
+        body: { model: "m", messages: [] },
+      }),
+      { ...makeOptions(), upstreamTimeoutMs: 20 },
+    );
+    const body = await res.json();
+    assert.equal(res.status, 504);
+    assert.equal(body.error.type, "upstream_timeout");
+    assert.match(body.error.message, /did not respond within/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.error = originalError;
+  }
+});
+
+test("流式空闲超时：上游中途不再发数据时，流以错误结束而不是永久挂住", async () => {
+  const encoder = new TextEncoder();
+  const stalled = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"A"}}]}\n\n'));
+      // 之后再也不发数据，也不关闭
+    },
+  });
+
+  await withUpstream(
+    new Response(stalled, { headers: { "content-type": "text/event-stream" } }),
+    async () => {
+      const started = Date.now();
+      const res = await handleProxyRequest(
+        proxyRequest("/deepseek/v1/chat/completions", {
+          body: { model: "m", stream: true, messages: [] },
+        }),
+        { ...makeOptions(), streamIdleTimeoutMs: 30 },
+      );
+
+      await assert.rejects(res.text(), /idle timeout/);
+      // 应该在空闲超时后很快结束，而不是一直等
+      assert.ok(Date.now() - started < 3000);
+    },
+  );
+});
+
+test("正常流式响应不会被空闲超时打断", async () => {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream({
+    async start(controller) {
+      for (const piece of ["A", "B", "C"]) {
+        controller.enqueue(encoder.encode(`data: {"choices":[{"delta":{"content":"${piece}"}}]}\n\n`));
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+      controller.close();
+    },
+  });
+
+  await withUpstream(
+    new Response(body, { headers: { "content-type": "text/event-stream" } }),
+    async () => {
+      const res = await handleProxyRequest(
+        proxyRequest("/deepseek/v1/chat/completions", {
+          body: { model: "m", stream: true, messages: [] },
+        }),
+        { ...makeOptions(), streamIdleTimeoutMs: 60 },
+      );
+
+      const text = await res.text();
+      assert.match(text, /"content":"A"/);
+      assert.match(text, /"content":"C"/);
+      assert.match(text, /data: \[DONE\]/);
+    },
+  );
+});
+
+test("Anthropic 转换流：空闲超时会转成 event: error 事件", async () => {
+  const encoder = new TextEncoder();
+  const stalled = new ReadableStream({
+    start(controller) {
+      controller.enqueue(
+        encoder.encode('data: {"id":"1","model":"m","choices":[{"delta":{"content":"A"}}]}\n\n'),
+      );
+      // 之后不再发数据
+    },
+  });
+
+  await withUpstream(
+    new Response(stalled, { headers: { "content-type": "text/event-stream" } }),
+    async () => {
+      const res = await handleProxyRequest(
+        proxyRequest("/opencode_anthropic/v1/messages", {
+          body: { model: "m", max_tokens: 8, stream: true, messages: [{ role: "user", content: "hi" }] },
+        }),
+        { ...makeOptions(), streamIdleTimeoutMs: 30 },
+      );
+
+      // 流会以错误结束，但必须在结束前把 Anthropic 的 error 事件发给客户端
+      let out = "";
+      try {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          out += decoder.decode(value, { stream: true });
+        }
+      } catch (_) {
+        // 预期内的流错误
+      }
+      assert.match(out, /event: error/);
+      assert.match(out, /"type":"error"/);
+    },
+  );
+});
