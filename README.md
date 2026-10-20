@@ -16,6 +16,7 @@
 - API Key 由客户端提供（安全可靠）
 - 全球边缘加速（Vercel / Cloudflare Workers）
 - **OpenCode Go Anthropic** 自动完成 Anthropic ↔ OpenAI 格式互转
+- OpenAI Chat Completions 流式响应自动补齐上游缺失的 `finish_reason` 终止块与 `data: [DONE]`
 - `GET /v1/models` 返回代理内置的厂商列表
 
 ## API 端点
@@ -440,7 +441,8 @@ npm run dev:cf   # Cloudflare Workers（wrangler dev）
 
 测试覆盖：缺失/空 API Key、provider 路由与查询串、`/token_plan` 前缀保留、未知 provider 与 `__proto__`、
 multipart 原样透传、非法 JSON 返回 400、上游错误码/响应头保留、Anthropic ↔ OpenAI 双向转换
-（tool_result 顺序、`tool_choice: none`、图片 url、system/stop 映射）、流式事件序列与中途出错处理。
+（tool_result 顺序、`tool_choice: none`、图片 url、system/stop 映射）、流式事件序列与中途出错处理、
+OpenAI SSE 缺失 `finish_reason` / `[DONE]` 时的终止块补齐。
 
 ## 技术栈
 
@@ -458,6 +460,7 @@ multipart 原样透传、非法 JSON 返回 400、上游错误码/响应头保�
 - 非 JSON 请求体（如 `multipart/form-data` 文件上传）按字节原样透传；声明为 JSON 但解析失败会返回 400
 - 代理默认是开放中继（CORS `*`、无内置限流）。生产环境建议至少设置 `PROXY_ACCESS_TOKEN`（见上），并在 Cloudflare 侧配置 Rate Limiting，避免域名/免费额度被滥用
 - 上游连接有超时保护：等响应头默认 300 秒（`UPSTREAM_TIMEOUT_MS`），流式空闲默认 120 秒（`STREAM_IDLE_TIMEOUT_MS`）。响应头阶段超时返回 504，网络不可达返回 502；两者都不会把上游的原始错误细节回显给客户端
+- OpenAI 兼容的 Chat Completions SSE 会做一次终止检查：若上游发完内容后始终没有 `finish_reason`（OpenCode Zen 的 muse 系列模型已知如此），代理会在 `[DONE]` 前补一个终止块（出现过 tool_calls 时为 `tool_calls`，否则为 `stop`），并在缺少 `[DONE]` 时补上；已有终止块的流原样转发，Anthropic 原生 SSE 不受影响。这样 opencode、Pi、Hermes 等严格校验结束标记的客户端不会再报 `Stream ended without finish_reason` 并重复重试
 - 上游 gzip 响应由运行时（Workers / undici）透明解压，因此转发时已剔除 `content-length` / `content-encoding`，避免客户端按错误的长度或编码解析
 - Vercel 免费计划每月提供 100GB 带宽（`vercel.json` 中已配置 `maxDuration: 60`，长流式对话请留意套餐上限）
 - Cloudflare Workers 免费计划每天 100,000 请求、每次请求 10ms CPU（等待上游的 I/O 不计入 CPU）、同时等待响应头的连接上限 6；HTTP 触发的 Worker 没有总时长上限，流式响应可持续传输（实测 SSE 逐块转发，不会整体缓冲）。超大上下文（几百 KB JSON）的解析与重新序列化会吃 CPU，接近 10ms 时需付费计划并显式配置 `[limits] cpu_ms`（该配置仅付费计划支持）

@@ -599,7 +599,10 @@ test("流式转换：由 query 参数触发 SSE 时也能识别（不再整体�
 });
 
 test("非 Anthropic provider 的 SSE 原样透传", async () => {
-  const sse = 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n' + "data: [DONE]\n\n";
+  const sse =
+    'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n' +
+    'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n' +
+    "data: [DONE]\n\n";
 
   await withUpstream(sseUpstream(sse), async (calls) => {
     const res = await handleProxyRequest(
@@ -615,7 +618,10 @@ test("非 Anthropic provider 的 SSE 原样透传", async () => {
 });
 
 test("SSE 透传：剔除上游的 content-length / content-encoding / connection", async () => {
-  const sse = 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n' + "data: [DONE]\n\n";
+  const sse =
+    'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n' +
+    'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n' +
+    "data: [DONE]\n\n";
   const upstream = new Response(sse, {
     headers: {
       "content-type": "text/event-stream",
@@ -640,6 +646,135 @@ test("SSE 透传：剔除上游的 content-length / content-encoding / connectio
     assert.equal(res.headers.get("connection"), null);
     // 其余上游头仍保留
     assert.equal(res.headers.get("x-request-id"), "req-1");
+    assert.equal(await res.text(), sse);
+  });
+});
+
+test("SSE 修复：上游缺 finish_reason 时在 [DONE] 前补合成终止块", async () => {
+  const sse =
+    'data: {"id":"chatcmpl-x","model":"muse-spark-1.2","choices":[{"index":0,"delta":{"content":"完整回答"}}]}\n\n' +
+    'data: {"id":"chatcmpl-x","model":"muse-spark-1.2","choices":[],"usage":{"prompt_tokens":9,"completion_tokens":4}}\n\n' +
+    "data: [DONE]\n\n";
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/opencode/v1/chat/completions", {
+        body: { model: "muse-spark-1.2", stream: true, messages: [] },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.text();
+    // 原始内容保持原样
+    assert.match(out, /"delta":\{"content":"完整回答"\}/);
+    assert.match(out, /"usage":\{"prompt_tokens":9,"completion_tokens":4\}/);
+    // [DONE] 之前出现了合法的终止块
+    assert.match(
+      out,
+      /data: \{"id":"chatcmpl-x","object":"chat\.completion\.chunk","created":\d+,"model":"muse-spark-1\.2","choices":\[\{"index":0,"delta":\{\},"finish_reason":"stop"\}\]\}\n\ndata: \[DONE\]/,
+    );
+    assert.ok(out.endsWith("data: [DONE]\n\n"));
+  });
+});
+
+test("SSE 修复：上游连 [DONE] 都没有时补终止块和 [DONE]", async () => {
+  const sse =
+    'data: {"id":"chatcmpl-y","model":"m","choices":[{"index":0,"delta":{"content":"hi"}}]}\n\n';
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/opencode_zen/v1/chat/completions", {
+        body: { model: "m", stream: true, messages: [] },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.text();
+    assert.match(out, /"finish_reason":"stop"/);
+    assert.ok(out.endsWith('data: [DONE]\n\n'));
+  });
+});
+
+test("SSE 修复：已有 finish_reason 时只补缺失的 [DONE]，不重复终止块", async () => {
+  const sse =
+    'data: {"id":"chatcmpl-k","choices":[{"index":0,"delta":{"content":"hi"}}]}\n\n' +
+    'data: {"id":"chatcmpl-k","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n';
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/opencode/v1/chat/completions", {
+        body: { model: "m", stream: true, messages: [] },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.text();
+    assert.equal((out.match(/"finish_reason":"stop"/g) || []).length, 1);
+    assert.ok(out.endsWith('data: [DONE]\n\n'));
+  });
+});
+
+test("SSE 修复：已输出 tool_calls 时合成 finish_reason=tool_calls", async () => {
+  const sse =
+    'data: {"id":"chatcmpl-t","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"f","arguments":"{}"}}]}}]}\n\n';
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/opencode/v1/chat/completions", {
+        body: { model: "m", stream: true, messages: [] },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.text();
+    assert.match(out, /"finish_reason":"tool_calls"/);
+    assert.ok(out.endsWith("data: [DONE]\n\n"));
+  });
+});
+
+test("SSE 修复：跨 chunk 拆行也能识别并补齐终止块", async () => {
+  const encoder = new TextEncoder();
+  const pieces = [
+    'data: {"id":"chatcmpl-z","choices":[{"index":0,"delta":{"content":"你',
+    '好"}}]}\n\ndata: {"choices":[{"index":0,"delta":{},"finish_reason":null}]}\n',
+  ];
+  const body = new ReadableStream({
+    start(controller) {
+      for (const piece of pieces) controller.enqueue(encoder.encode(piece));
+      controller.close();
+    },
+  });
+
+  await withUpstream(
+    new Response(body, { headers: { "content-type": "text/event-stream" } }),
+    async () => {
+      const res = await handleProxyRequest(
+        proxyRequest("/opencode/v1/chat/completions", {
+          body: { model: "m", stream: true, messages: [] },
+        }),
+        makeOptions(),
+      );
+
+      const out = await res.text();
+      assert.match(out, /"delta":\{"content":"你好"\}/);
+      assert.match(out, /"finish_reason":"stop"/);
+      assert.ok(out.endsWith('data: [DONE]\n\n'));
+    },
+  );
+});
+
+test("Anthropic 原生 SSE 不补 OpenAI 的 finish_reason / [DONE]", async () => {
+  const sse =
+    'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}\n\n';
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/deepseek_anthropic/v1/messages", {
+        body: { model: "m", max_tokens: 8, stream: true, messages: [] },
+      }),
+      makeOptions(),
+    );
+
     assert.equal(await res.text(), sse);
   });
 });

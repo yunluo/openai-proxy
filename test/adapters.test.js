@@ -100,7 +100,10 @@ test("Vercel: OPTIONS 预检直接返回，不请求上游", async () => {
 });
 
 test("Vercel: SSE 响应逐块写回，且保留上游响应头", async () => {
-  const sse = 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n' + "data: [DONE]\n\n";
+  const sse =
+    'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n' +
+    'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n' +
+    "data: [DONE]\n\n";
   await withUpstream(
     () =>
       new Response(sse, {

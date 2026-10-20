@@ -825,6 +825,121 @@ async function* openAIStreamToAnthropicSSE(reader, requestModel) {
   })}\n\n`;
 }
 
+// ──────────────────────────────────────────────
+// OpenAI 兼容 SSE 的终止块修复
+//
+// 部分上游（例如 OpenCode Zen 的 muse 模型）在内容发完后直接关闭流：既没有带
+// finish_reason 的终止 chunk，也可能没有 data: [DONE]。OpenAI 官方规范要求两者
+// 至少要有终止 chunk，严格校验的客户端（opencode、Pi、Hermes 等）会因此把正常
+// 结束当成流中断，报 "Stream ended without finish_reason" 并反复重试。
+//
+// 这里只在「确实收到了 choices 却始终没有 finish_reason」时补一个合成终止块，
+// 并补上缺失的 [DONE]；内容块与其余字段原样逐行转发，不改写已有事件。
+// ──────────────────────────────────────────────
+const OPENAI_CHAT_COMPLETIONS_PATH_RE = /(?:^|\/)chat\/completions\/?$/;
+
+function normalizeOpenAIChatSSE(body, idleMs, fallbackModel) {
+  const source = withIdleTimeout(body, idleMs);
+  if (!source) return body;
+
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let sawChoice = false;
+  let sawFinishReason = false;
+  let sawToolCalls = false;
+  let sawDone = false;
+  let lastId = "";
+  let lastModel = fallbackModel || "";
+  let lastChoiceIndex = 0;
+
+  const emit = (controller, text) => controller.enqueue(encoder.encode(text));
+
+  const buildFinishChunk = () => {
+    const finishReason = sawToolCalls ? "tool_calls" : "stop";
+    return `data: ${JSON.stringify({
+      id: lastId || `chatcmpl-proxy-${Date.now()}`,
+      object: "chat.completion.chunk",
+      created: Math.floor(Date.now() / 1000),
+      model: lastModel,
+      choices: [
+        { index: lastChoiceIndex, delta: {}, finish_reason: finishReason },
+      ],
+    })}\n\n`;
+  };
+
+  const handleLine = (controller, line, isFinal) => {
+    const trimmed = line.trim();
+    let eventData = null;
+    let isDone = false;
+
+    if (trimmed.startsWith("data:")) {
+      const data = trimmed.slice(5).trim();
+      if (data === "[DONE]") {
+        isDone = true;
+      } else if (data) {
+        eventData = data;
+      }
+    }
+
+    if (eventData) {
+      try {
+        const chunk = JSON.parse(eventData);
+        if (typeof chunk?.id === "string" && chunk.id) lastId = chunk.id;
+        if (typeof chunk?.model === "string" && chunk.model) {
+          lastModel = chunk.model;
+        }
+        const choices = Array.isArray(chunk?.choices) ? chunk.choices : [];
+        if (choices.length > 0) sawChoice = true;
+        for (const choice of choices) {
+          if (!choice) continue;
+          if (Number.isInteger(choice.index)) lastChoiceIndex = choice.index;
+          if (choice.finish_reason != null) sawFinishReason = true;
+          const delta = choice.delta || choice.message;
+          if (Array.isArray(delta?.tool_calls) && delta.tool_calls.length > 0) {
+            sawToolCalls = true;
+          }
+        }
+      } catch (_) {
+        // 非 JSON 的 data 行原样透传
+      }
+    }
+
+    // [DONE] 之前补终止块：保证结束块出现在所有内容块之后
+    if (isDone && sawChoice && !sawFinishReason) {
+      emit(controller, buildFinishChunk());
+      sawFinishReason = true;
+    }
+
+    emit(controller, isFinal ? `${line}\n\n` : `${line}\n`);
+    if (isDone) sawDone = true;
+  };
+
+  return source.pipeThrough(
+    new TransformStream({
+      transform(chunk, controller) {
+        buffer += decoder.decode(chunk, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) handleLine(controller, line, false);
+      },
+      flush(controller) {
+        buffer += decoder.decode();
+        if (buffer) handleLine(controller, buffer, true);
+        // 上游连 [DONE] 都没发：补终止块 + [DONE]
+        if (sawChoice && !sawFinishReason) {
+          emit(controller, buildFinishChunk());
+          sawFinishReason = true;
+        }
+        if (sawChoice && !sawDone) {
+          emit(controller, "data: [DONE]\n\n");
+          sawDone = true;
+        }
+      },
+    }),
+  );
+}
+
 // 是否为 MiniMax 官网套餐/额度接口路径（/token_plan/*、/coding_plan/*）
 // 这类路径必须保留前缀转发给 www.minimaxi.com，不能像 provider 那样剥掉首段
 function isMiniMaxPlanPath(path) {
@@ -1216,7 +1331,21 @@ export async function handleProxyRequest(request, options = {}) {
     const streamHeaders = copyResponseHeaders(response, "text/event-stream");
     streamHeaders.set("Cache-Control", "no-cache");
     streamHeaders.delete("Connection");
-    return new Response(withIdleTimeout(response.body, idleTimeoutMs), {
+
+    // OpenAI Chat Completions 流：修复上游缺失的 finish_reason / [DONE]，
+    // 否则严格客户端会把正常结束当成中断。Anthropic 原生 SSE 不适用。
+    const needsChatStreamFix =
+      !resolved.provider.endsWith("_anthropic") &&
+      OPENAI_CHAT_COMPLETIONS_PATH_RE.test(targetPath);
+    const streamBody = needsChatStreamFix
+      ? normalizeOpenAIChatSSE(
+          response.body,
+          idleTimeoutMs,
+          requestBodyObj?.model,
+        )
+      : withIdleTimeout(response.body, idleTimeoutMs);
+
+    return new Response(streamBody, {
       status: response.status,
       headers: streamHeaders,
     });
