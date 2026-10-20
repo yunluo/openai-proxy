@@ -606,3 +606,33 @@ test("非 Anthropic provider 的 SSE 原样透传", async () => {
     assert.equal(await res.text(), sse);
   });
 });
+
+test("SSE 透传：剔除上游的 content-length / content-encoding / connection", async () => {
+  const sse = 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n' + "data: [DONE]\n\n";
+  const upstream = new Response(sse, {
+    headers: {
+      "content-type": "text/event-stream",
+      "content-encoding": "gzip",
+      "content-length": "999",
+      connection: "keep-alive",
+      "x-request-id": "req-1",
+    },
+  });
+
+  await withUpstream(upstream, async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/deepseek/v1/chat/completions", {
+        body: { model: "m", stream: true, messages: [] },
+      }),
+      makeOptions(),
+    );
+
+    assert.equal(res.headers.get("content-type"), "text/event-stream");
+    assert.equal(res.headers.get("content-encoding"), null);
+    assert.equal(res.headers.get("content-length"), null);
+    assert.equal(res.headers.get("connection"), null);
+    // 其余上游头仍保留
+    assert.equal(res.headers.get("x-request-id"), "req-1");
+    assert.equal(await res.text(), sse);
+  });
+});

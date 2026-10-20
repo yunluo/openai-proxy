@@ -19,5 +19,6 @@ enabled = false
 head_sampling_rate = 1
 
 [placement]
+# 四种 placement 选项互斥；本代理要访问多个上游（minimax / opencode / openrouter…），
+# 用 smart 让 Cloudflare 自动挑选离上游最近的位置，不再写 region
 mode = "smart"
-region = "aws:ap-east-1"

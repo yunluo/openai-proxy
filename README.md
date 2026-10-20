@@ -71,6 +71,13 @@
 2. Workers & Pages → 创建 Worker → 选择从 GitHub 导入
 3. 连接您的 GitHub 仓库并部署
 
+`wrangler.toml` 中的要点：
+
+- `name` 必须与 Cloudflare 上已有的 Worker 名一致，否则会新建一个 Worker
+- `[placement]` 只写 `mode = "smart"`：四种 placement 选项（`mode` / `region` / `host` / `hostname`）互斥，本代理要访问多个上游，交给 Cloudflare 自动挑选离上游最近的位置
+- `[observability] enabled = true` 打开 Workers Logs（免费计划含 20 万条日志/天，可在 dashboard 的 Observability 查看）
+- `compatibility_date` 建议改为当前日期后再部署（本项目代码只用到标准 Web API）
+
 ## 环境变量配置（可选）
 
 ### 内置厂商 API 地址
@@ -441,7 +448,8 @@ multipart 原样透传、非法 JSON 返回 400、上游错误码/响应头保�
 - 非 JSON 请求体（如 `multipart/form-data` 文件上传）按字节原样透传；声明为 JSON 但解析失败会返回 400
 - 本服务是开放中继（CORS `*`、无内置限流）。生产环境建议在 Cloudflare 侧配置 Rate Limiting，或自行加访问门禁，避免域名/免费额度被滥用
 - Vercel 免费计划每月提供 100GB 带宽（`vercel.json` 中已配置 `maxDuration: 60`，长流式对话请留意套餐上限）
-- Cloudflare Workers 免费计划每天 100,000 请求
+- Cloudflare Workers 免费计划每天 100,000 请求、每次请求 10ms CPU（等待上游的 I/O 不计入 CPU）、同时等待响应头的连接上限 6；HTTP 触发的 Worker 没有总时长上限，流式响应可持续传输（实测 SSE 逐块转发，不会整体缓冲）
+- 上游若对响应做了 gzip，运行时（Workers / undici）会自动解压，因此转发时已剔除 `content-length` / `content-encoding`，避免客户端按错误的长度或编码解析
 - **OpenCode Go Anthropic** 端点在代理层完成 Anthropic ↔ OpenAI 格式互转，客户端使用 Anthropic SDK 即可调用 OpenCode Go 的任意模型（DeepSeek V4 Pro、GLM-5、Kimi K2.6 等）
 
 ## 相关链接

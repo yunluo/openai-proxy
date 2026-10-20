@@ -974,8 +974,9 @@ export async function handleProxyRequest(request, options = {}) {
     }
 
     // 其他 provider：直接透传 SSE 流
-    const streamHeaders = new Headers(response.headers);
-    streamHeaders.set("Content-Type", "text/event-stream");
+    // 运行时（Workers/undici）会自动解压上游的 gzip，上游的 content-length /
+    // content-encoding 因此不再匹配实际字节数，必须剔除后再转发
+    const streamHeaders = copyResponseHeaders(response, "text/event-stream");
     streamHeaders.set("Cache-Control", "no-cache");
     streamHeaders.delete("Connection");
     return new Response(response.body, {
