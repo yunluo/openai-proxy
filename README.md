@@ -1,10 +1,10 @@
 # Multi-Provider API Proxy
 
-一个支持 Vercel 和 Cloudflare Workers 的多厂商 AI API 反向代理服务，通过 URL 路径前缀将请求路由到不同的 AI 服务商。
+一个部署在 Cloudflare Workers 上的多厂商 AI API 反向代理服务，通过 URL 路径前缀将请求路由到不同的 AI 服务商。
 
 ## 项目背景
 
-在企业内网环境中，部分 AI 服务商的接口可能受到限制。本项目通过将 AI API 请求代理到企业内网可访问的 Vercel/Cloudflare Workers 域名，实现曲线访问多个 AI 服务商。
+在企业内网环境中，部分 AI 服务商的接口可能受到限制。本项目通过将 AI API 请求代理到企业内网可访问的 Cloudflare Workers 域名，实现曲线访问多个 AI 服务商。
 
 ## 功能特点
 
@@ -14,7 +14,7 @@
 - 兼容 OpenAI 格式接口 (`/v1/*`) — 默认路由到 MiniMax
 - `Bearer` / `X-API-Key` 认证方式
 - API Key 由客户端提供（安全可靠）
-- 全球边缘加速（Vercel / Cloudflare Workers）
+- Cloudflare 全球边缘网络加速
 - **OpenCode Go Anthropic** 自动完成 Anthropic ↔ OpenAI 格式互转
 - OpenAI Chat Completions 流式响应自动补齐上游缺失的 `finish_reason` 终止块与 `data: [DONE]`
 - `GET /v1/models` 返回代理内置的厂商列表
@@ -49,22 +49,13 @@
 
 | 平台 | 部署地址示例 |
 |------|-------------|
-| **Vercel** | `https://maxapi.vercel.app` |
 | **Cloudflare Workers** | `https://maxapi.yunluo.workers.dev` |
 
 ## 一键部署
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/import)
-
 [![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?to=:github)
 
 ## 手动部署
-
-### Vercel (GitHub 导入)
-
-1. 访问 [vercel.com/new](https://vercel.com/new)
-2. 导入您的 GitHub 仓库
-3. 点击 Deploy
 
 ### Cloudflare Workers (GitHub 集成)
 
@@ -142,106 +133,106 @@ Claude Code 可通过 `ANTHROPIC_CUSTOM_HEADERS="x-proxy-token: <口令>"` 附�
 
 ```bash
 # MiniMax (默认，兼容旧版)
-curl --request POST 'https://maxapi.vercel.app/v1/chat/completions' \
+curl --request POST 'https://maxapi.yunluo.workers.dev/v1/chat/completions' \
   --header 'content-type: application/json' \
   --header 'authorization: Bearer xxxxxxxxxx' \
   --data '{"model":"MiniMax-M2.7","messages":[{"role":"user","content":"Hello"}]}'
 
 # MiniMax Anthropic 兼容端点（使用 x-api-key 认证）
-curl --request POST 'https://maxapi.vercel.app/minimax_anthropic/v1/messages' \
+curl --request POST 'https://maxapi.yunluo.workers.dev/minimax_anthropic/v1/messages' \
   --header 'content-type: application/json' \
   --header 'x-api-key: xxxxxxxxxx' \
   --header 'anthropic-version: 2023-06-01' \
   --data '{"model":"claude-3-5-sonnet-20241022","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}'
 
 # 智谱 GLM
-curl --request POST 'https://maxapi.vercel.app/glm/v1/chat/completions' \
+curl --request POST 'https://maxapi.yunluo.workers.dev/glm/v1/chat/completions' \
   --header 'content-type: application/json' \
   --header 'authorization: Bearer xxxxxxxxxx' \
   --data '{"model":"glm-4","messages":[{"role":"user","content":"Hello"}]}'
 
 # Kimi 月之暗面
-curl --request POST 'https://maxapi.vercel.app/kim/v1/chat/completions' \
+curl --request POST 'https://maxapi.yunluo.workers.dev/kim/v1/chat/completions' \
   --header 'content-type: application/json' \
   --header 'authorization: Bearer xxxxxxxxxx' \
   --data '{"model":"moonshot-v1-8k","messages":[{"role":"user","content":"Hello"}]}'
 
 # DeepSeek
-curl --request POST 'https://maxapi.vercel.app/deepseek/v1/chat/completions' \
+curl --request POST 'https://maxapi.yunluo.workers.dev/deepseek/v1/chat/completions' \
   --header 'content-type: application/json' \
   --header 'authorization: Bearer xxxxxxxxxx' \
   --data '{"model":"deepseek-chat","messages":[{"role":"user","content":"Hello"}]}'
 
 # DeepSeek Anthropic 兼容端点（使用 x-api-key 认证）
-curl --request POST 'https://maxapi.vercel.app/deepseek_anthropic/v1/messages' \
+curl --request POST 'https://maxapi.yunluo.workers.dev/deepseek_anthropic/v1/messages' \
   --header 'content-type: application/json' \
   --header 'x-api-key: xxxxxxxxxx' \
   --header 'anthropic-version: 2023-06-01' \
   --data '{"model":"deepseek-v4-pro","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}'
 
 # OpenAI GPT
-curl --request POST 'https://maxapi.vercel.app/gpt/v1/chat/completions' \
+curl --request POST 'https://maxapi.yunluo.workers.dev/gpt/v1/chat/completions' \
   --header 'content-type: application/json' \
   --header 'authorization: Bearer xxxxxxxxxx' \
   --data '{"model":"gpt-4o","messages":[{"role":"user","content":"Hello"}]}'
 
 # 小米 MiMo
-curl --request POST 'https://maxapi.vercel.app/xiaomi/v1/chat/completions' \
+curl --request POST 'https://maxapi.yunluo.workers.dev/xiaomi/v1/chat/completions' \
   --header 'content-type: application/json' \
   --header 'authorization: Bearer xxxxxxxxxx' \
   --data '{"model":"MiMo-8B","messages":[{"role":"user","content":"Hello"}]}'
 
 # 通义千问
-curl --request POST 'https://maxapi.vercel.app/qwen/v1/chat/completions' \
+curl --request POST 'https://maxapi.yunluo.workers.dev/qwen/v1/chat/completions' \
   --header 'content-type: application/json' \
   --header 'authorization: Bearer xxxxxxxxxx' \
   --data '{"model":"qwen-turbo","messages":[{"role":"user","content":"Hello"}]}'
 
 # OpenCode Go
-curl --request POST 'https://maxapi.vercel.app/opencode/v1/chat/completions' \
+curl --request POST 'https://maxapi.yunluo.workers.dev/opencode/v1/chat/completions' \
   --header 'content-type: application/json' \
   --header 'authorization: Bearer xxxxxxxxxx' \
   --data '{"model":"glm-4-plus","messages":[{"role":"user","content":"Hello"}]}'
 
 # OpenCode Go Anthropic（自动格式互转，可用任意 OpenCode Go 支持的模型）
-curl --request POST 'https://maxapi.vercel.app/opencode_anthropic/v1/messages' \
+curl --request POST 'https://maxapi.yunluo.workers.dev/opencode_anthropic/v1/messages' \
   --header 'content-type: application/json' \
   --header 'x-api-key: xxxxxxxxxx' \
   --header 'anthropic-version: 2023-06-01' \
   --data '{"model":"deepseek-v4-pro","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}'
 
 # 硅基流动
-curl --request POST 'https://maxapi.vercel.app/siliconflow/v1/chat/completions' \
+curl --request POST 'https://maxapi.yunluo.workers.dev/siliconflow/v1/chat/completions' \
   --header 'content-type: application/json' \
   --header 'authorization: Bearer xxxxxxxxxx' \
   --data '{"model":"Qwen/Qwen2.5-7B-Instruct","messages":[{"role":"user","content":"Hello"}]}'
 
 # 阿里云
-curl --request POST 'https://maxapi.vercel.app/aliyun/v1/chat/completions' \
+curl --request POST 'https://maxapi.yunluo.workers.dev/aliyun/v1/chat/completions' \
   --header 'content-type: application/json' \
   --header 'authorization: Bearer xxxxxxxxxx' \
   --data '{"model":"qwen-turbo","messages":[{"role":"user","content":"Hello"}]}'
 
 # 火山方舟
-curl --request POST 'https://maxapi.vercel.app/volcengine/v1/chat/completions' \
+curl --request POST 'https://maxapi.yunluo.workers.dev/volcengine/v1/chat/completions' \
   --header 'content-type: application/json' \
   --header 'authorization: Bearer xxxxxxxxxx' \
   --data '{"model":"doubao-1.5-pro-32k","messages":[{"role":"user","content":"Hello"}]}'
 
 # 智谱 GLM CP (编程)
-curl --request POST 'https://maxapi.vercel.app/glm_cp/v1/chat/completions' \
+curl --request POST 'https://maxapi.yunluo.workers.dev/glm_cp/v1/chat/completions' \
   --header 'content-type: application/json' \
   --header 'authorization: Bearer xxxxxxxxxx' \
   --data '{"model":"glm-4","messages":[{"role":"user","content":"Hello"}]}'
 
 # 小米 MiMo CP
-curl --request POST 'https://maxapi.vercel.app/xiaomi_cp/v1/chat/completions' \
+curl --request POST 'https://maxapi.yunluo.workers.dev/xiaomi_cp/v1/chat/completions' \
   --header 'content-type: application/json' \
   --header 'authorization: Bearer xxxxxxxxxx' \
   --data '{"model":"MiMo-8B","messages":[{"role":"user","content":"Hello"}]}'
 
 # 自定义 Provider（需配置 CUSTOM_PROVIDER_1_NAME=mole + CUSTOM_PROVIDER_1_API_BASE）
-curl --request POST 'https://maxapi.vercel.app/mole/v1/chat/completions' \
+curl --request POST 'https://maxapi.yunluo.workers.dev/mole/v1/chat/completions' \
   --header 'content-type: application/json' \
   --header 'authorization: Bearer xxxxxxxxxx' \
   --data '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}]}'
@@ -254,7 +245,7 @@ from openai import OpenAI
 
 # GPT
 client = OpenAI(
-    base_url="https://maxapi.vercel.app/gpt/v1",
+    base_url="https://maxapi.yunluo.workers.dev/gpt/v1",
     api_key="your-gpt-key"
 )
 response = client.chat.completions.create(
@@ -265,7 +256,7 @@ print(response.choices[0].message.content)
 
 # 小米 MiMo
 client = OpenAI(
-    base_url="https://maxapi.vercel.app/xiaomi/v1",
+    base_url="https://maxapi.yunluo.workers.dev/xiaomi/v1",
     api_key="your-xiaomi-key"
 )
 response = client.chat.completions.create(
@@ -276,7 +267,7 @@ print(response.choices[0].message.content)
 
 # 通义千问
 client = OpenAI(
-    base_url="https://maxapi.vercel.app/qwen/v1",
+    base_url="https://maxapi.yunluo.workers.dev/qwen/v1",
     api_key="your-qianwen-key"
 )
 response = client.chat.completions.create(
@@ -287,7 +278,7 @@ print(response.choices[0].message.content)
 
 # OpenCode Go
 client = OpenAI(
-    base_url="https://maxapi.vercel.app/opencode/v1",
+    base_url="https://maxapi.yunluo.workers.dev/opencode/v1",
     api_key="your-opencode-key"
 )
 response = client.chat.completions.create(
@@ -298,7 +289,7 @@ print(response.choices[0].message.content)
 
 # 硅基流动
 client = OpenAI(
-    base_url="https://maxapi.vercel.app/siliconflow/v1",
+    base_url="https://maxapi.yunluo.workers.dev/siliconflow/v1",
     api_key="your-siliconflow-key"
 )
 response = client.chat.completions.create(
@@ -309,7 +300,7 @@ print(response.choices[0].message.content)
 
 # 阿里云
 client = OpenAI(
-    base_url="https://maxapi.vercel.app/aliyun/v1",
+    base_url="https://maxapi.yunluo.workers.dev/aliyun/v1",
     api_key="your-aliyun-key"
 )
 response = client.chat.completions.create(
@@ -320,7 +311,7 @@ print(response.choices[0].message.content)
 
 # 火山方舟
 client = OpenAI(
-    base_url="https://maxapi.vercel.app/volcengine/v1",
+    base_url="https://maxapi.yunluo.workers.dev/volcengine/v1",
     api_key="your-volcengine-key"
 )
 response = client.chat.completions.create(
@@ -332,7 +323,7 @@ print(response.choices[0].message.content)
 # MiniMax Anthropic 兼容端点（使用 Anthropic Python SDK）
 from anthropic import Anthropic
 client = Anthropic(
-    base_url="https://maxapi.vercel.app/minimax_anthropic/v1",
+    base_url="https://maxapi.yunluo.workers.dev/minimax_anthropic/v1",
     api_key="your-minimax-key"
 )
 message = client.messages.create(
@@ -345,7 +336,7 @@ print(message.content[0].text)
 # DeepSeek Anthropic 兼容端点（使用 Anthropic Python SDK）
 from anthropic import Anthropic
 client = Anthropic(
-    base_url="https://maxapi.vercel.app/deepseek_anthropic/v1",
+    base_url="https://maxapi.yunluo.workers.dev/deepseek_anthropic/v1",
     api_key="your-deepseek-key"
 )
 message = client.messages.create(
@@ -358,7 +349,7 @@ print(message.content[0].text)
 # OpenCode Go Anthropic（自动格式互转，可用任意 OpenCode Go 支持的模型）
 from anthropic import Anthropic
 client = Anthropic(
-    base_url="https://maxapi.vercel.app/opencode_anthropic/v1",
+    base_url="https://maxapi.yunluo.workers.dev/opencode_anthropic/v1",
     api_key="your-opencode-go-key"
 )
 message = client.messages.create(
@@ -370,7 +361,7 @@ print(message.content[0].text)
 
 # 智谱 GLM CP (编程)
 client = OpenAI(
-    base_url="https://maxapi.vercel.app/glm_cp/v1",
+    base_url="https://maxapi.yunluo.workers.dev/glm_cp/v1",
     api_key="your-glm-key"
 )
 response = client.chat.completions.create(
@@ -381,7 +372,7 @@ print(response.choices[0].message.content)
 
 # 小米 MiMo CP
 client = OpenAI(
-    base_url="https://maxapi.vercel.app/xiaomi_cp/v1",
+    base_url="https://maxapi.yunluo.workers.dev/xiaomi_cp/v1",
     api_key="your-xiaomi-key"
 )
 response = client.chat.completions.create(
@@ -392,7 +383,7 @@ print(response.choices[0].message.content)
 
 # 自定义 Provider（需配置 CUSTOM_PROVIDER_1_NAME=mole + CUSTOM_PROVIDER_1_API_BASE）
 client = OpenAI(
-    base_url="https://maxapi.vercel.app/mole/v1",
+    base_url="https://maxapi.yunluo.workers.dev/mole/v1",
     api_key="your-mole-key"
 )
 response = client.chat.completions.create(
@@ -405,7 +396,7 @@ print(response.choices[0].message.content)
 ### Token Plan 额度查询
 
 ```bash
-curl https://maxapi.vercel.app/token_plan/billing/query \
+curl https://maxapi.yunluo.workers.dev/token_plan/billing/query \
   -H "Authorization: Bearer $YOUR_TOKEN_PLAN_KEY"
 ```
 
@@ -413,16 +404,14 @@ curl https://maxapi.vercel.app/token_plan/billing/query \
 
 ```
 openai-proxy/
-├── vercel/
-│   └── index.js      # Vercel Serverless Function 适配器
 ├── workers/
 │   └── index.js      # Cloudflare Workers 适配器
 ├── src/
 │   ├── core.js       # 共享核心代理逻辑（多厂商路由 + Anthropic↔OpenAI 格式互转）
 │   └── config.js     # API 配置（内置厂商 + 环境变量）
 ├── test/
-│   └── core.test.js  # 路由 / 格式互转 / 流式转换测试
-├── vercel.json       # Vercel 配置（含通用 Provider 路由）
+│   ├── core.test.js     # 路由 / 格式互转 / 流式转换测试
+│   └── adapters.test.js # Cloudflare Workers 适配器测试
 ├── wrangler.toml     # Cloudflare Workers 配置
 └── package.json      # 项目依赖
 ```
@@ -435,8 +424,7 @@ npm test
 bun test
 
 # 本地开发
-npm run dev      # Vercel（npx vercel dev）
-npm run dev:cf   # Cloudflare Workers（wrangler dev）
+npm run dev      # Cloudflare Workers（wrangler dev）
 ```
 
 测试覆盖：缺失/空 API Key、provider 路由与查询串、`/token_plan` 前缀保留、未知 provider 与 `__proto__`、
@@ -447,8 +435,8 @@ Anthropic 转换路径在缺少 `finish_reason` 时的 `tool_use` 推断。
 
 ## 技术栈
 
-- Vercel Serverless Functions / Cloudflare Workers
-- Node.js 18+（本地开发 / Vercel 部署需要）
+- Cloudflare Workers
+- Node.js 18+（本地运行测试需要）
 - API Proxy
 
 ## 注意事项
@@ -463,7 +451,6 @@ Anthropic 转换路径在缺少 `finish_reason` 时的 `tool_use` 推断。
 - 上游连接有超时保护：等响应头默认 300 秒（`UPSTREAM_TIMEOUT_MS`），流式空闲默认 120 秒（`STREAM_IDLE_TIMEOUT_MS`）。响应头阶段超时返回 504，网络不可达返回 502；两者都不会把上游的原始错误细节回显给客户端
 - OpenAI 兼容的 Chat Completions SSE 会做一次终止检查：若上游发完内容后始终没有 `finish_reason`（OpenCode Zen 的 muse 系列模型已知如此），代理会在 `[DONE]` 前补一个终止块（出现过 tool_calls 时为 `tool_calls`，否则为 `stop`），并在缺少 `[DONE]` 时补上；已有终止块的流原样转发，Anthropic 原生 SSE 不受影响。上游在流内明确报错（`data: {"error":…}` 或非 JSON 的 data 行）时不会补成功终止块。这样 opencode、Pi、Hermes 等严格校验结束标记的客户端不会再报 `Stream ended without finish_reason` 并重复重试。Anthropic 转换路径在缺少 `finish_reason` 但已输出 `tool_use` 块时，也会把 `stop_reason` 推断为 `tool_use`，避免工具不被执行
 - 上游 gzip 响应由运行时（Workers / undici）透明解压，因此转发时已剔除 `content-length` / `content-encoding`，避免客户端按错误的长度或编码解析
-- Vercel 免费计划每月提供 100GB 带宽（`vercel.json` 中已配置 `maxDuration: 60`，长流式对话请留意套餐上限）
 - Cloudflare Workers 免费计划每天 100,000 请求、每次请求 10ms CPU（等待上游的 I/O 不计入 CPU）、同时等待响应头的连接上限 6；HTTP 触发的 Worker 没有总时长上限，流式响应可持续传输（实测 SSE 逐块转发，不会整体缓冲）。超大上下文（几百 KB JSON）的解析与重新序列化会吃 CPU，接近 10ms 时需付费计划并显式配置 `[limits] cpu_ms`（该配置仅付费计划支持）
 - **OpenCode Go Anthropic** 端点在代理层完成 Anthropic ↔ OpenAI 格式互转，客户端使用 Anthropic SDK 即可调用 OpenCode Go 的任意模型（DeepSeek V4 Pro、GLM-5、Kimi K2.6 等）
 
@@ -484,7 +471,6 @@ Anthropic 转换路径在缺少 `finish_reason` 时的 `tool_use` 推断。
 - [硅基流动](https://siliconflow.cn)
 - [阿里云百炼](https://bailian.console.aliyun.com)
 - [火山方舟](https://www.volcengine.com/product/ark)
-- [Vercel 文档](https://vercel.com/docs)
 - [Cloudflare Workers 文档](https://developers.cloudflare.com/workers/)
 
 ## License

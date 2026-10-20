@@ -1047,7 +1047,7 @@ function buildModelsResponse(options) {
 // 主代理请求处理函数
 // ──────────────────────────────────────────────
 export async function handleProxyRequest(request, options = {}) {
-  // 统一处理相对路径（Vercel）和完整 URL（Cloudflare Workers）
+  // 统一处理相对路径（测试/Node）和完整 URL（Cloudflare Workers）
   const parsedUrl = new URL(request.url, "http://localhost");
   const originalPath = parsedUrl.pathname;
   const search = parsedUrl.search; // preserve query string

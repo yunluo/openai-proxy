@@ -1,51 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Readable } from "node:stream";
 
-import vercelHandler from "../vercel/index.js";
 import worker from "../workers/index.js";
-
-// ──────────────────────────────────────────────
-// 模拟 Node.js 的 IncomingMessage / ServerResponse
-// ──────────────────────────────────────────────
-
-function mockReq({ method = "POST", url = "/v1/chat/completions", headers = {}, body } = {}) {
-  const req = new Readable({ read() {} });
-  req.method = method;
-  req.url = url;
-  req.headers = headers;
-  queueMicrotask(() => {
-    if (body !== undefined) req.push(Buffer.from(body));
-    req.push(null);
-  });
-  return req;
-}
-
-function mockRes() {
-  const chunks = [];
-  return {
-    statusCode: 200,
-    headersSent: false,
-    ended: false,
-    _headers: {},
-    setHeader(key, value) {
-      this._headers[key.toLowerCase()] = value;
-    },
-    write(chunk) {
-      chunks.push(Buffer.from(chunk));
-      this.headersSent = true;
-      return true;
-    },
-    end(chunk) {
-      if (chunk !== undefined) chunks.push(Buffer.from(chunk));
-      this.headersSent = true;
-      this.ended = true;
-    },
-    text() {
-      return Buffer.concat(chunks).toString("utf8");
-    },
-  };
-}
 
 function jsonResponse(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), {
@@ -67,110 +23,6 @@ async function withUpstream(responder, fn) {
     globalThis.fetch = originalFetch;
   }
 }
-
-// ──────────────────────────────────────────────
-// Vercel 适配器
-// ──────────────────────────────────────────────
-
-test("Vercel: JSON 代理请求写回状态码、CORS 与响应体", async () => {
-  await withUpstream(() => jsonResponse({ ok: true }), async (calls) => {
-    const req = mockReq({
-      url: "/deepseek/v1/chat/completions",
-      headers: { authorization: "Bearer k", "content-type": "application/json" },
-      body: JSON.stringify({ model: "m", messages: [] }),
-    });
-    const res = mockRes();
-    await vercelHandler(req, res);
-
-    assert.equal(calls[0].url, "https://api.deepseek.com/v1/chat/completions");
-    assert.equal(res.statusCode, 200);
-    assert.equal(res._headers["access-control-allow-origin"], "*");
-    assert.deepEqual(JSON.parse(res.text()), { ok: true });
-  });
-});
-
-test("Vercel: OPTIONS 预检直接返回，不请求上游", async () => {
-  await withUpstream(() => jsonResponse({ ok: true }), async (calls) => {
-    const res = mockRes();
-    await vercelHandler(mockReq({ method: "OPTIONS" }), res);
-    assert.equal(res.statusCode, 200);
-    assert.equal(calls.length, 0);
-    assert.ok(res._headers["access-control-allow-headers"].includes("x-opencode-session"));
-  });
-});
-
-test("Vercel: SSE 响应逐块写回，且保留上游响应头", async () => {
-  const sse =
-    'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n' +
-    'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n' +
-    "data: [DONE]\n\n";
-  await withUpstream(
-    () =>
-      new Response(sse, {
-        headers: { "content-type": "text/event-stream", "x-request-id": "req_9" },
-      }),
-    async () => {
-      const res = mockRes();
-      await vercelHandler(
-        mockReq({
-          url: "/deepseek/v1/chat/completions",
-          headers: { authorization: "Bearer k", "content-type": "application/json" },
-          body: JSON.stringify({ model: "m", stream: true }),
-        }),
-        res,
-      );
-      assert.equal(res.text(), sse);
-      assert.equal(res._headers["x-request-id"], "req_9");
-      assert.equal(res.ended, true);
-    },
-  );
-});
-
-test("Vercel: 上游错误状态码与 Retry-After 原样返回", async () => {
-  await withUpstream(
-    () => jsonResponse({ error: { message: "slow" } }, 429, { "retry-after": "9" }),
-    async () => {
-      const res = mockRes();
-      await vercelHandler(
-        mockReq({
-          url: "/v1/chat/completions",
-          headers: { authorization: "Bearer k", "content-type": "application/json" },
-          body: JSON.stringify({ model: "m" }),
-        }),
-        res,
-      );
-      assert.equal(res.statusCode, 429);
-      assert.equal(res._headers["retry-after"], "9");
-    },
-  );
-});
-
-test("Vercel: 上游网络错误返回 502 JSON（不再落到 500 internal_error）", async () => {
-  const originalError = console.error;
-  console.error = () => {}; // 该用例故意触发网络错误，屏蔽预期内的日志
-  try {
-    await withUpstream(
-      () => {
-        throw new Error("socket hang up");
-      },
-      async () => {
-        const res = mockRes();
-        await vercelHandler(
-          mockReq({
-            url: "/v1/chat/completions",
-            headers: { authorization: "Bearer k", "content-type": "application/json" },
-            body: JSON.stringify({ model: "m" }),
-          }),
-          res,
-        );
-        assert.equal(res.statusCode, 502);
-        assert.equal(JSON.parse(res.text()).error.type, "upstream_unreachable");
-      },
-    );
-  } finally {
-    console.error = originalError;
-  }
-});
 
 // ──────────────────────────────────────────────
 // Cloudflare Workers 适配器
@@ -235,4 +87,35 @@ test("Workers: OPTIONS 预检返回 CORS 且不请求上游", async () => {
       res.headers.get("access-control-allow-headers").includes("x-opencode-session"),
     );
   });
+});
+
+test("Workers: SSE 响应原样透传，且保留上游响应头", async () => {
+  const sse =
+    'data: {"choices":[{"index":0,"delta":{"content":"hi"}}]}\n\n' +
+    'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n' +
+    "data: [DONE]\n\n";
+
+  await withUpstream(
+    () =>
+      new Response(sse, {
+        headers: {
+          "content-type": "text/event-stream",
+          "x-request-id": "req_9",
+        },
+      }),
+    async () => {
+      const res = await worker.fetch(
+        new Request("https://proxy.example/deepseek/v1/chat/completions", {
+          method: "POST",
+          headers: { authorization: "Bearer k", "content-type": "application/json" },
+          body: JSON.stringify({ model: "m", stream: true }),
+        }),
+        {},
+      );
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get("content-type"), "text/event-stream");
+      assert.equal(res.headers.get("x-request-id"), "req_9");
+      assert.equal(await res.text(), sse);
+    },
+  );
 });
