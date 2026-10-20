@@ -44,7 +44,7 @@
 | 自定义 | `/{自定义名称}/v1/` | 由环境变量配置 |
 | 额度 / 套餐查询 | `/token_plan/*`、`/coding_plan/*` | `https://www.minimaxi.com`（**保留路径前缀**） |
 | 模型列表 | `GET /v1/models` | 由代理本地返回，不转发上游 |
-| OpenCode Zen Go 的 `x-opencode-session` | 任意 | 代理会按白名单透传 `x-opencode-session`、`HTTP-Referer`、`X-Title` |
+| OpenCode Zen / Go 的 `x-opencode-session` | 任意 | 代理会自动补一个格式合法的会话 id，并透传 `x-opencode-session`、`x-session-id`、`x-session-affinity`、`x-opencode-client`、`HTTP-Referer`、`X-Title` |
 
 | 平台 | 部署地址示例 |
 |------|-------------|
@@ -452,9 +452,9 @@ multipart 原样透传、非法 JSON 返回 400、上游错误码/响应头保�
 
 - 请妥善保管您的 API Key
 - 严格遵守各厂商的 API 使用条款（含 Anthropic、OpenAI 等）
-- 代理会按白名单透传少量头（`x-opencode-session`、`x-session-id`、`x-session-affinity`、`user-agent`、`HTTP-Referer`、`X-Title`），不会转发 `host`/`cookie` 等敏感头
-- `/opencode` 与 `/opencode_anthropic` 指向 OpenCode **Go** 网关（`zen/go/v1`，与官方文档的 `inference/go/openai/v1` 行为一致），上游要求携带会话头（`x-opencode-session` / `x-session-id` / `x-session-affinity` 任一），缺失时返回 400 `MissingSessionID`。客户端自带则原样透传；**没带时由代理自动补**：按 `apiKey + model + 首条用户消息` 派生 `ses_<hash>`，同一对话的每一轮都得到同一个 id（保留上游路由与提示缓存亲和），因此 Claude Code 这类不认识该头的客户端可直接使用
-- `/opencode_zen`（`zen/v1`）用无效/免费凭据访问时会返回 403 `FreeTierError`：OpenCode 免费层只允许其自家客户端使用（实测伪装 User-Agent 无效），需使用有效订阅凭据
+- 代理会按白名单透传少量头（`x-opencode-session`、`x-opencode-session-id`、`x-opencode-parent-session-id`、`x-opencode-client`、`x-opencode-project`、`x-opencode-request`、`x-session-id`、`x-session-affinity`、`x-parent-session-id`、`user-agent`、`HTTP-Referer`、`X-Title`），不会转发 `host`/`cookie` 等敏感头
+- `/opencode`、`/opencode_anthropic`（Go 网关 `zen/go/v1`）与 `/opencode_zen`（`zen/v1`）都要求会话头：Go 缺失时返回 400 `MissingSessionID`，Zen 免费模型还会校验 `x-opencode-session` 的格式（`ses_` + 12 位十六进制 + 14 位 base62）。客户端自带的会话值格式合法就沿用，否则（包括 opencode 接自定义 provider 时只发 `x-session-id`、或旧版派生出的 `ses_<8位十六进制>`）由代理重新补一个合法值：按 `apiKey + model + 首条用户消息` 派生，同一对话的每一轮都得到同一个 id（保留上游路由与提示缓存亲和）
+- `/opencode_zen`（`zen/v1`）的免费模型还有客户端校验：`User-Agent` 必须是 `opencode/<版本>`，且请求要是正常的编码代理请求（带工具）。opencode 自己发出的请求满足这些条件，代理原样透传 `user-agent` 并补齐会话头即可；但若代理链路外层的运行时会改写 `User-Agent`（例如某些边缘平台），或客户端用了禁用 `bash`/`read` 的受限 agent，上游仍会返回 403 `FreeTierError`，这属于上游策略，代理无法绕过
 - 非 JSON 请求体（如 `multipart/form-data` 文件上传）按字节原样透传；声明为 JSON 但解析失败会返回 400
 - 代理默认是开放中继（CORS `*`、无内置限流）。生产环境建议至少设置 `PROXY_ACCESS_TOKEN`（见上），并在 Cloudflare 侧配置 Rate Limiting，避免域名/免费额度被滥用
 - 上游连接有超时保护：等响应头默认 300 秒（`UPSTREAM_TIMEOUT_MS`），流式空闲默认 120 秒（`STREAM_IDLE_TIMEOUT_MS`）。响应头阶段超时返回 504，网络不可达返回 502；两者都不会把上游的原始错误细节回显给客户端

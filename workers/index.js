@@ -46,7 +46,7 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
   "Access-Control-Allow-Headers":
-    "Content-Type, Authorization, x-api-key, anthropic-version, anthropic-beta, anthropic-dangerous-direct-browser-access, x-opencode-session, x-session-id, x-session-affinity, x-proxy-token, HTTP-Referer, X-Title",
+    "Content-Type, Authorization, x-api-key, anthropic-version, anthropic-beta, anthropic-dangerous-direct-browser-access, x-opencode-session, x-opencode-session-id, x-opencode-parent-session-id, x-opencode-client, x-opencode-project, x-opencode-request, x-session-id, x-session-affinity, x-parent-session-id, x-proxy-token, HTTP-Referer, X-Title",
   "Access-Control-Expose-Headers":
     "x-request-id, retry-after, x-ratelimit-limit, x-ratelimit-remaining, x-ratelimit-reset",
 };

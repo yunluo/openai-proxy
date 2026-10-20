@@ -14,6 +14,8 @@ function makeOptions(overrides = {}) {
       deepseek: { apiBase: "https://api.deepseek.com/v1" },
       glm: { apiBase: "https://open.bigmodel.cn/api/paas/v4" },
       deepseek_anthropic: { apiBase: PROVIDERS.deepseek_anthropic.default },
+      opencode: { apiBase: "https://opencode.ai/zen/go/v1" },
+      opencode_zen: { apiBase: "https://opencode.ai/zen/v1" },
       opencode_anthropic: { apiBase: "https://opencode.ai/zen/go/v1" },
       ...overrides,
     },
@@ -280,12 +282,15 @@ test("JSON 响应保留上游状态码与响应头", async () => {
 });
 
 test("x-opencode-session 等白名单头会透传给上游", async () => {
+  const session = "ses_ea8e062a1ffef1R1BHXWtidHvn";
   await withUpstream(jsonResponse({ ok: true }), async (calls) => {
     await handleProxyRequest(
       proxyRequest("/opencode_anthropic/v1/messages", {
         headers: {
-          "x-opencode-session": "sess-1",
+          "x-opencode-session": session,
           "x-session-id": "sess-2",
+          "x-opencode-client": "cli",
+          "x-opencode-project": "global",
           "user-agent": "claude-cli/2.0.0",
           "HTTP-Referer": "https://app",
         },
@@ -293,7 +298,9 @@ test("x-opencode-session 等白名单头会透传给上游", async () => {
       }),
       makeOptions(),
     );
-    assert.equal(calls[0].headers["x-opencode-session"], "sess-1");
+    assert.equal(calls[0].headers["x-opencode-session"], session);
+    assert.equal(calls[0].headers["x-opencode-client"], "cli");
+    assert.equal(calls[0].headers["x-opencode-project"], "global");
     assert.equal(calls[0].headers["x-session-id"], "sess-2");
     assert.equal(calls[0].headers["user-agent"], "claude-cli/2.0.0");
     assert.equal(calls[0].headers["http-referer"], "https://app");
@@ -642,7 +649,10 @@ const OK_OPENAI = {
   choices: [{ message: { role: "assistant", content: "ok" } }],
 };
 
-test("OpenCode Go：客户端没带会话头时自动派生 x-opencode-session", async () => {
+// OpenCode 原生会话 id：ses_ + 12 位十六进制 + 14 位 base62
+const OPENCODE_SESSION_RE = /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
+
+test("OpenCode Go：客户端没带会话头时自动派生格式合法的 x-opencode-session", async () => {
   await withUpstream(() => jsonResponse(OK_OPENAI), async (calls) => {
     const res = await handleProxyRequest(
       proxyRequest("/opencode_anthropic/v1/messages", {
@@ -656,7 +666,21 @@ test("OpenCode Go：客户端没带会话头时自动派生 x-opencode-session",
     );
 
     assert.equal(res.status, 200);
-    assert.match(calls[0].headers["x-opencode-session"], /^ses_[0-9a-f]{8}$/);
+    assert.match(calls[0].headers["x-opencode-session"], OPENCODE_SESSION_RE);
+  });
+});
+
+test("OpenCode Zen（非 Go 路径）也会补 x-opencode-session", async () => {
+  await withUpstream(() => jsonResponse(OK_OPENAI), async (calls) => {
+    await handleProxyRequest(
+      proxyRequest("/opencode_zen/v1/chat/completions", {
+        body: { model: "big-pickle", messages: [{ role: "user", content: "你好" }] },
+      }),
+      makeOptions(),
+    );
+
+    assert.equal(calls[0].url, "https://opencode.ai/zen/v1/chat/completions");
+    assert.match(calls[0].headers["x-opencode-session"], OPENCODE_SESSION_RE);
   });
 });
 
@@ -688,45 +712,41 @@ test("OpenCode Go：同一对话的后续轮次派生同一个会话 id，新对
   });
 });
 
-test("会话头：客户端自带的值优先，空白值视为未提供，非 Go 上游不注入", async () => {
+test("OpenCode 网关会话头：合法值沿用，非法/空白值改为派生，非网关注入", async () => {
+  const clientSession = "ses_ea8e062a1ffef1R1BHXWtidHvn";
   await withUpstream(() => jsonResponse(OK_OPENAI), async (calls) => {
-    // 客户端自带 x-session-id（Claude Code 等）→ 原样透传，不注入
-    await handleProxyRequest(
-      proxyRequest("/opencode_anthropic/v1/messages", {
-        headers: { "x-session-id": "client-sess" },
-        body: {
-          model: "glm-5",
-          max_tokens: 8,
-          messages: [{ role: "user", content: "你好" }],
-        },
-      }),
-      makeOptions(),
-    );
-    assert.equal(calls[0].headers["x-session-id"], "client-sess");
-    assert.equal(calls[0].headers["x-opencode-session"], undefined);
+    const send = (headers, path = "/opencode_anthropic/v1/messages") =>
+      handleProxyRequest(
+        proxyRequest(path, {
+          headers,
+          body: {
+            model: "glm-5",
+            max_tokens: 8,
+            messages: [{ role: "user", content: "你好" }],
+          },
+        }),
+        makeOptions(),
+      );
 
-    // 只有空白值 → 视为未提供，仍会补一个
-    await handleProxyRequest(
-      proxyRequest("/opencode_anthropic/v1/messages", {
-        headers: { "x-session-id": "   " },
-        body: {
-          model: "glm-5",
-          max_tokens: 8,
-          messages: [{ role: "user", content: "你好" }],
-        },
-      }),
-      makeOptions(),
-    );
-    assert.match(calls[1].headers["x-opencode-session"], /^ses_[0-9a-f]{8}$/);
+    // opencode 作为自定义 provider 接入时只发 x-session-id（值本身合法）→ 沿用
+    await send({ "x-session-id": clientSession });
+    assert.equal(calls[0].headers["x-session-id"], clientSession);
+    assert.equal(calls[0].headers["x-opencode-session"], clientSession);
 
-    // 非 OpenCode Go 上游：不注入会话头
-    await handleProxyRequest(
-      proxyRequest("/deepseek/v1/chat/completions", {
-        body: { model: "m", messages: [{ role: "user", content: "你好" }] },
-      }),
-      makeOptions(),
+    // 非 OpenCode 格式的会话值（如 Claude Code 的 uuid）不能满足免费模型校验 → 派生
+    await send({ "x-session-id": "01a0af13-c6df-73c6-8803-9e6d9c720da7" });
+    assert.match(calls[1].headers["x-opencode-session"], OPENCODE_SESSION_RE);
+
+    // 空白值 → 视为未提供，仍会补一个
+    await send({ "x-session-id": "   " });
+    assert.match(calls[2].headers["x-opencode-session"], OPENCODE_SESSION_RE);
+
+    // 非 OpenCode 网关上游：不注入会话头
+    await send(
+      {},
+      "/deepseek/v1/chat/completions",
     );
-    assert.equal(calls[2].headers["x-opencode-session"], undefined);
+    assert.equal(calls[3].headers["x-opencode-session"], undefined);
   });
 });
 

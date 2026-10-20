@@ -60,8 +60,14 @@ function imageSourceToUrl(source) {
 // 允许透传给上游的额外请求头白名单（不含认证头，认证头单独处理）
 const PASSTHROUGH_HEADERS = [
   "x-opencode-session", // OpenCode Zen Go 必需（会话路由/缓存亲和）
+  "x-opencode-session-id", // OpenCode 原生会话 id
+  "x-opencode-parent-session-id", // OpenCode 父会话（子代理）
+  "x-opencode-client", // OpenCode 客户端标识（cli/desktop…）
+  "x-opencode-project", // OpenCode 项目标识（上游归因）
+  "x-opencode-request", // OpenCode 单次请求标识（上游归因）
   "x-session-id", // OpenCode Go 同样识别客户端原生会话头
   "x-session-affinity", // 同上
+  "x-parent-session-id", // 父会话（Claude Code 等）
   "user-agent", // 上游要求客户端自我标识（勿用通用 SDK 名）
   "http-referer", // OpenRouter 排行/归因
   "x-title", // OpenRouter 排行/归因
@@ -77,24 +83,38 @@ function copyResponseHeaders(response, contentType) {
   return headers;
 }
 
-// OpenCode Go 网关（/zen/go/...、/inference/go/...）要求客户端提供会话 id 用于
-// 路由与提示缓存亲和，缺失时上游直接返回 400 MissingSessionID
-const OPENCODE_GO_BASE_RE = /\/(?:zen|inference)\/go(?:\/|$)/i;
+// OpenCode Zen / Go / inference 网关都要求客户端提供会话 id：
+// - Go（/zen/go/…、/inference/go/…）缺失时直接返回 400 MissingSessionID
+// - Zen 免费模型还会校验 x-opencode-session 的格式（ses_ + 12 位十六进制 +
+//   14 位 base62）以及 User-Agent 是否为 opencode/<版本>
+const OPENCODE_GATEWAY_BASE_RE = /\/(?:zen|inference)(?:\/|$)/i;
 
-// 上游接受的会话头名，任一存在即可
+// OpenCode 原生会话 id 的形状（ses_ + 12 位十六进制时间片 + 14 位 base62 随机片）
+const OPENCODE_SESSION_RE = /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
+const OPENCODE_SESSION_TAIL_ALPHABET =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+// 上游接受的会话头名（按优先级排列）
 const SESSION_HEADER_NAMES = [
   "x-opencode-session",
   "x-session-id",
   "x-session-affinity",
 ];
 
-// 客户端是否自带了有效的会话头（空白值视为未提供）
-function getClientSessionHeader(headers) {
+// 客户端是否自带了格式合法的 OpenCode 会话头：opencode 把代理当自定义 provider
+// 时只发 x-session-id / x-session-affinity，且值本身就是合法的 ses_… 形式
+function getClientOpenCodeSession(headers) {
   for (const name of SESSION_HEADER_NAMES) {
     const value = getHeader(headers, name);
-    if (typeof value === "string" && value.trim()) return { name, value };
+    if (typeof value === "string" && isOpenCodeSessionId(value)) {
+      return value.trim();
+    }
   }
   return null;
+}
+
+function isOpenCodeSessionId(value) {
+  return typeof value === "string" && OPENCODE_SESSION_RE.test(value.trim());
 }
 
 // FNV-1a 32 位哈希：纯同步实现，Workers 与 Node 结果一致
@@ -105,6 +125,21 @@ function fnv1a32(text) {
     hash = Math.imul(hash, 0x01000193);
   }
   return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+// 从种子派生格式合法的 OpenCode 会话 id：同一对话的每一轮都得到同一个 id，
+// 新对话得到不同的 id，保留上游路由与提示缓存亲和
+function deriveOpenCodeSessionId(seed) {
+  const head = (fnv1a32(seed) + fnv1a32(`${seed}#head`)).slice(0, 12);
+  let tail = "";
+  for (let i = 0; i < 14; i++) {
+    const hash = fnv1a32(`${seed}#tail${i}`);
+    tail +=
+      OPENCODE_SESSION_TAIL_ALPHABET[
+        parseInt(hash, 16) % OPENCODE_SESSION_TAIL_ALPHABET.length
+      ];
+  }
+  return `ses_${head}${tail}`;
 }
 
 // 取首条 user 消息的文本。同一次对话的每一轮都会重发完整历史，首条 user 消息
@@ -1043,16 +1078,19 @@ export async function handleProxyRequest(request, options = {}) {
     targetPath = targetPath.replace(/\/messages\/?$/, "/chat/completions");
   }
 
-  // OpenCode Go 网关缺会话头会直接返回 400 MissingSessionID，而 Claude Code 等
-  // 客户端不认识这个头，因此客户端未提供时由代理补一个：用「apiKey + model +
-  // 首条用户消息」派生，同一对话的每一轮都得到同一个 id，保留上游缓存亲和性
-  if (OPENCODE_GO_BASE_RE.test(base) && isJsonBody) {
-    const clientSession = getClientSessionHeader(request.headers);
-    if (!clientSession) {
+  // OpenCode Zen / Go 网关的会话头：Go 缺了直接 400 MissingSessionID，Zen 免费
+  // 模型还会校验格式。opencode 把代理当自定义 provider 时只发 x-session-id /
+  // x-session-affinity，不发 x-opencode-session，所以这里统一补一个格式合法的
+  // x-opencode-session；客户端自带的值只要格式合法就沿用，保留原本的会话亲和
+  if (OPENCODE_GATEWAY_BASE_RE.test(base) && isJsonBody) {
+    const clientSession = getClientOpenCodeSession(request.headers);
+    if (clientSession) {
+      headers["x-opencode-session"] = clientSession;
+    } else {
       const seed = `${apiKey}\n${requestBodyObj?.model ?? ""}\n${firstUserMessageText(
         requestBodyObj,
       )}`;
-      headers["x-opencode-session"] = `ses_${fnv1a32(seed)}`;
+      headers["x-opencode-session"] = deriveOpenCodeSessionId(seed);
     }
   }
 
