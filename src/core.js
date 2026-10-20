@@ -77,6 +77,55 @@ function copyResponseHeaders(response, contentType) {
   return headers;
 }
 
+// OpenCode Go 网关（/zen/go/...、/inference/go/...）要求客户端提供会话 id 用于
+// 路由与提示缓存亲和，缺失时上游直接返回 400 MissingSessionID
+const OPENCODE_GO_BASE_RE = /\/(?:zen|inference)\/go(?:\/|$)/i;
+
+// 上游接受的会话头名，任一存在即可
+const SESSION_HEADER_NAMES = [
+  "x-opencode-session",
+  "x-session-id",
+  "x-session-affinity",
+];
+
+// 客户端是否自带了有效的会话头（空白值视为未提供）
+function getClientSessionHeader(headers) {
+  for (const name of SESSION_HEADER_NAMES) {
+    const value = getHeader(headers, name);
+    if (typeof value === "string" && value.trim()) return { name, value };
+  }
+  return null;
+}
+
+// FNV-1a 32 位哈希：纯同步实现，Workers 与 Node 结果一致
+function fnv1a32(text) {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+// 取首条 user 消息的文本。同一次对话的每一轮都会重发完整历史，首条 user 消息
+// 因此保持不变，可据此派生「每个对话稳定」的会话 id
+function firstUserMessageText(payload) {
+  const messages = Array.isArray(payload?.messages) ? payload.messages : [];
+  const first = messages.find((m) => m && m.role === "user");
+  if (!first) return "";
+  const { content } = first;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter(
+        (part) => part && part.type === "text" && typeof part.text === "string",
+      )
+      .map((part) => part.text)
+      .join("\n");
+  }
+  return "";
+}
+
 // 将上游错误映射为 Anthropic 风格的错误响应，并保留原始状态码
 function anthropicErrorResponse(status, error) {
   const message =
@@ -897,6 +946,19 @@ export async function handleProxyRequest(request, options = {}) {
   let targetPath = resolved.strippedPath;
   if (isOpenCodeAnthropic) {
     targetPath = targetPath.replace(/\/messages\/?$/, "/chat/completions");
+  }
+
+  // OpenCode Go 网关缺会话头会直接返回 400 MissingSessionID，而 Claude Code 等
+  // 客户端不认识这个头，因此客户端未提供时由代理补一个：用「apiKey + model +
+  // 首条用户消息」派生，同一对话的每一轮都得到同一个 id，保留上游缓存亲和性
+  if (OPENCODE_GO_BASE_RE.test(base) && isJsonBody) {
+    const clientSession = getClientSessionHeader(request.headers);
+    if (!clientSession) {
+      const seed = `${apiKey}\n${requestBodyObj?.model ?? ""}\n${firstUserMessageText(
+        requestBodyObj,
+      )}`;
+      headers["x-opencode-session"] = `ses_${fnv1a32(seed)}`;
+    }
   }
 
   const targetUrl = `${base}${targetPath}${search}`;

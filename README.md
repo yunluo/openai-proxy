@@ -443,7 +443,7 @@ multipart 原样透传、非法 JSON 返回 400、上游错误码/响应头保�
 - 请妥善保管您的 API Key
 - 严格遵守各厂商的 API 使用条款（含 Anthropic、OpenAI 等）
 - 代理会按白名单透传少量头（`x-opencode-session`、`x-session-id`、`x-session-affinity`、`user-agent`、`HTTP-Referer`、`X-Title`），不会转发 `host`/`cookie` 等敏感头
-- `/opencode` 与 `/opencode_anthropic` 指向 OpenCode **Go** 网关（`zen/go/v1`，与官方文档的 `inference/go/openai/v1` 行为一致），**必须**由客户端携带会话头（`x-opencode-session` / `x-session-id` / `x-session-affinity` 任一），否则上游返回 400 `MissingSessionID`
+- `/opencode` 与 `/opencode_anthropic` 指向 OpenCode **Go** 网关（`zen/go/v1`，与官方文档的 `inference/go/openai/v1` 行为一致），上游要求携带会话头（`x-opencode-session` / `x-session-id` / `x-session-affinity` 任一），缺失时返回 400 `MissingSessionID`。客户端自带则原样透传；**没带时由代理自动补**：按 `apiKey + model + 首条用户消息` 派生 `ses_<hash>`，同一对话的每一轮都得到同一个 id（保留上游路由与提示缓存亲和），因此 Claude Code 这类不认识该头的客户端可直接使用
 - `/opencode_zen`（`zen/v1`）用无效/免费凭据访问时会返回 403 `FreeTierError`：OpenCode 免费层只允许其自家客户端使用（实测伪装 User-Agent 无效），需使用有效订阅凭据
 - 非 JSON 请求体（如 `multipart/form-data` 文件上传）按字节原样透传；声明为 JSON 但解析失败会返回 400
 - 本服务是开放中继（CORS `*`、无内置限流）。生产环境建议在 Cloudflare 侧配置 Rate Limiting，或自行加访问门禁，避免域名/免费额度被滥用
