@@ -961,6 +961,15 @@ function buildChatSSEFromCompletion(data, fallbackModel) {
   return frames.join("");
 }
 
+// 把上游的异常/非流式响应包装成一条客户端能识别的 SSE 错误流
+function buildChatSSEError(message, type = "upstream_error") {
+  return (
+    `data: ${JSON.stringify({
+      error: { type, message: String(message).slice(0, 2000) },
+    })}\n\n` + "data: [DONE]\n\n"
+  );
+}
+
 function normalizeOpenAIChatSSE(body, idleMs, fallbackModel) {
   const source = withIdleTimeout(body, idleMs);
   if (!source) return body;
@@ -1467,6 +1476,14 @@ export async function handleProxyRequest(request, options = {}) {
   // 或 Accept 头触发的 SSE（那样会被错误地整体缓冲）
   const isSSE = !!response.body && !!contentType?.includes("text/event-stream");
 
+  // 客户端明确要求流式 Chat Completions：无论上游实际返回什么，最终都要给
+  // 客户端一条带终止事件的 SSE，绝不能让它收到「零个事件」的 200 响应。
+  const wantsChatStream =
+    isJsonBody &&
+    requestBodyObj?.stream === true &&
+    !resolved.provider.endsWith("_anthropic") &&
+    OPENAI_CHAT_COMPLETIONS_PATH_RE.test(targetPath);
+
   // ──── 流式响应处理 ────
   if (isSSE) {
     if (isOpenCodeAnthropic) {
@@ -1561,12 +1578,6 @@ export async function handleProxyRequest(request, options = {}) {
     // 客户端请求了 stream:true，上游却返回 JSON：包成 SSE 终止流，避免客户端
     // 因「零个事件」而报 stream ended without finish_reason。错误响应保留原
     // 状态码，让客户端走正常的 HTTP 错误处理。
-    const wantsChatStream =
-      isJsonBody &&
-      requestBodyObj?.stream === true &&
-      !isOpenCodeAnthropic &&
-      !resolved.provider.endsWith("_anthropic") &&
-      OPENAI_CHAT_COMPLETIONS_PATH_RE.test(targetPath);
     if (wantsChatStream && response.ok) {
       const jsonStreamHeaders = copyResponseHeaders(
         response,
@@ -1614,8 +1625,26 @@ export async function handleProxyRequest(request, options = {}) {
     });
   }
 
-  // 其他类型（如纯文本）→ 直接透传
+  // 其他类型（如纯文本 / HTML / 空响应）→ 原样透传；但流式 Chat 请求必须
+  // 返回 SSE 终止事件，否则严格客户端会误报 stream ended without finish_reason
   const text = await readUpstreamText(response.body, idleTimeoutMs);
+  if (wantsChatStream && response.ok) {
+    const snippet = text.trim().slice(0, 500);
+    return new Response(
+      buildChatSSEError(
+        `Upstream returned a non-SSE response (${contentType || "unknown content type"})` +
+          (snippet ? `: ${snippet}` : " with an empty body."),
+        "upstream_unexpected_response",
+      ),
+      {
+        status: 200,
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+        },
+      },
+    );
+  }
   return new Response(text, {
     status: response.status,
     headers: copyResponseHeaders(response, contentType || "text/plain"),

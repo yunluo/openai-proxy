@@ -1082,6 +1082,52 @@ test("SSE 修复：请求 stream 但上游返回 200 JSON 错误时转成 SSE er
   );
 });
 
+test("SSE 修复：请求 stream 但上游返回 HTML/纯文本时转成 SSE error", async () => {
+  await withUpstream(
+    new Response("<html>blocked by edge</html>", {
+      headers: { "content-type": "text/html" },
+    }),
+    async () => {
+      const res = await handleProxyRequest(
+        proxyRequest("/opencode/v1/chat/completions", {
+          body: { model: "m", stream: true, messages: [] },
+        }),
+        makeOptions(),
+      );
+
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get("content-type"), "text/event-stream");
+      const out = await res.text();
+      assert.match(out, /non-SSE response \(text\/html\)/);
+      assert.match(out, /blocked by edge/);
+      assert.ok(!out.includes('"finish_reason"'));
+      assert.ok(out.endsWith("data: [DONE]\n\n"));
+    },
+  );
+});
+
+test("SSE 修复：请求 stream 但上游返回空 body 时也补 SSE error", async () => {
+  await withUpstream(
+    new Response("", {
+      status: 200,
+      headers: { "content-type": "text/plain" },
+    }),
+    async () => {
+      const res = await handleProxyRequest(
+        proxyRequest("/opencode/v1/chat/completions", {
+          body: { model: "m", stream: true, messages: [] },
+        }),
+        makeOptions(),
+      );
+
+      const out = await res.text();
+      assert.match(out, /empty body/);
+      assert.ok(!out.includes('"finish_reason"'));
+      assert.ok(out.endsWith("data: [DONE]\n\n"));
+    },
+  );
+});
+
 test("JSON 响应：未请求 stream 时保持原样，不转 SSE", async () => {
   await withUpstream(
     jsonResponse({
