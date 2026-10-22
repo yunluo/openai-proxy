@@ -117,6 +117,15 @@ function isOpenCodeSessionId(value) {
   return typeof value === "string" && OPENCODE_SESSION_RE.test(value.trim());
 }
 
+// OpenCode Zen 免费模型：上游免费层不需要 API Key，只校验 OpenCode 客户端身份头。
+// 若客户端带了任意无效 key，上游反而会返回 Invalid credential / FreeTierError。
+// 免费模型以 -free 结尾（另有 big-pickle）；#variant 后缀由客户端自己处理。
+function isOpenCodeZenFreeModel(model) {
+  if (typeof model !== "string") return false;
+  const id = model.trim().toLowerCase().split("#")[0];
+  return id === "big-pickle" || id.endsWith("-free");
+}
+
 // FNV-1a 32 位哈希：纯同步实现，Workers 与 Node 结果一致
 function fnv1a32(text) {
   let hash = 0x811c9dc5;
@@ -1075,7 +1084,14 @@ export async function handleProxyRequest(request, options = {}) {
     apiKey = xApiKey ? xApiKey.trim() || null : null;
   }
 
-  if (!apiKey) {
+  // 解析目标 provider 和实际路径
+  const resolved = resolveProvider(originalPath, options);
+
+  // OpenCode Zen 允许匿名请求：免费模型不需要上游 API Key，免费层只校验
+  // OpenCode 客户端身份头。其他 provider 仍要求客户端提供 key；付费 Zen 模型
+  // 若没带 key，由上游返回 401，代理原样透出。
+  const allowsAnonymous = resolved.provider === "opencode_zen";
+  if (!apiKey && !allowsAnonymous) {
     return new Response(
       JSON.stringify({
         error: {
@@ -1087,9 +1103,6 @@ export async function handleProxyRequest(request, options = {}) {
       { status: 401, headers: { "Content-Type": "application/json" } },
     );
   }
-
-  // 解析目标 provider 和实际路径
-  const resolved = resolveProvider(originalPath, options);
 
   // /v1/models 端点：返回代理支持的模型列表（需要认证）
   // 仅匹配裸路径 /v1/models，带 provider 前缀的路径（如 /deepseek/v1/models）应代理到上游
@@ -1153,7 +1166,7 @@ export async function handleProxyRequest(request, options = {}) {
     if (anthropicDangerous) {
       headers["anthropic-dangerous-direct-browser-access"] = anthropicDangerous;
     }
-  } else {
+  } else if (apiKey) {
     // OpenAI 兼容端点：使用 Authorization Bearer 认证
     headers["Authorization"] = `Bearer ${apiKey}`;
   }
@@ -1197,6 +1210,16 @@ export async function handleProxyRequest(request, options = {}) {
     }
   }
 
+  // OpenCode Zen 免费模型：免费层不需要 API Key，带上任意无效 key 反而会被
+  // 上游拒绝（Invalid credential / FreeTierError）。付费模型仍使用客户端 key。
+  if (
+    resolved.provider === "opencode_zen" &&
+    isOpenCodeZenFreeModel(requestBodyObj?.model)
+  ) {
+    delete headers["Authorization"];
+    delete headers["x-api-key"];
+  }
+
   // 目标 URL = provider 基础地址（去掉尾部斜杠）+ 实际路径 + 查询串
   const base = String(resolved.targetBase).replace(/\/+$/, "");
 
@@ -1221,7 +1244,7 @@ export async function handleProxyRequest(request, options = {}) {
     if (clientSession) {
       headers["x-opencode-session"] = clientSession;
     } else {
-      const seed = `${apiKey}\n${requestBodyObj?.model ?? ""}\n${firstUserMessageText(
+      const seed = `${apiKey ?? ""}\n${requestBodyObj?.model ?? ""}\n${firstUserMessageText(
         requestBodyObj,
       )}`;
       headers["x-opencode-session"] = deriveOpenCodeSessionId(seed);

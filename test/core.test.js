@@ -114,6 +114,97 @@ test("x-api-key 也能作为认证来源，并且空值不算有效 key", async 
   });
 });
 
+// OpenCode Zen 免费模型：上游免费层只认 OpenCode 客户端身份头，不需要也不接受
+// 任意 Authorization；代理应允许匿名请求，并且不要给免费模型加 Bearer。
+const ZEN_FREE_SSE =
+  'data: {"id":"zen-1","model":"deepseek-v4.1-flash-free","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"}}]}\n\n' +
+  "data: [DONE]\n\n";
+
+test("opencode_zen 免费模型：无 API Key 也可请求，且不向上游发送 Authorization", async () => {
+  await withUpstream(sseUpstream(ZEN_FREE_SSE), async (calls) => {
+    const res = await handleProxyRequest(
+      proxyRequest("/opencode_zen/v1/chat/completions", {
+        key: null,
+        body: {
+          model: "deepseek-v4.1-flash-free",
+          stream: true,
+          messages: [{ role: "user", content: "hi" }],
+        },
+      }),
+      makeOptions(),
+    );
+
+    assert.equal(res.status, 200);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].headers.authorization, undefined);
+    // 顺带验证免费模型的流仍会经过 SSE 终止块修复
+    const out = await res.text();
+    assert.match(out, /"finish_reason":"stop"/);
+    assert.ok(out.endsWith("data: [DONE]\n\n"));
+  });
+});
+
+test("opencode_zen 免费模型：客户端带占位 key 也不透传 Authorization", async () => {
+  await withUpstream(sseUpstream(ZEN_FREE_SSE), async (calls) => {
+    const res = await handleProxyRequest(
+      proxyRequest("/opencode_zen/v1/chat/completions", {
+        key: "free",
+        body: {
+          model: "deepseek-v4.1-flash-free",
+          stream: true,
+          messages: [{ role: "user", content: "hi" }],
+        },
+      }),
+      makeOptions(),
+    );
+
+    assert.equal(res.status, 200);
+    assert.equal(calls[0].headers.authorization, undefined);
+  });
+});
+
+test("opencode_zen 付费模型：仍透传客户端 Authorization", async () => {
+  await withUpstream(sseUpstream(ZEN_FREE_SSE), async (calls) => {
+    const res = await handleProxyRequest(
+      proxyRequest("/opencode_zen/v1/chat/completions", {
+        key: "zen-real-key",
+        body: {
+          model: "claude-sonnet-4-5",
+          stream: true,
+          messages: [{ role: "user", content: "hi" }],
+        },
+      }),
+      makeOptions(),
+    );
+
+    assert.equal(res.status, 200);
+    assert.equal(calls[0].headers.authorization, "Bearer zen-real-key");
+  });
+});
+
+test("opencode_zen 付费模型：无 key 时转发上游 401，不伪造成功", async () => {
+  const upstream = jsonResponse(
+    { error: { message: "missing credential" } },
+    401,
+  );
+  await withUpstream(upstream, async (calls) => {
+    const res = await handleProxyRequest(
+      proxyRequest("/opencode_zen/v1/chat/completions", {
+        key: null,
+        body: {
+          model: "claude-sonnet-4-5",
+          stream: true,
+          messages: [{ role: "user", content: "hi" }],
+        },
+      }),
+      makeOptions(),
+    );
+
+    assert.equal(res.status, 401);
+    assert.equal(calls[0].headers.authorization, undefined);
+  });
+});
+
 test("路由：/{provider}/v1/* 剥离前缀并拼接 provider 基址", async () => {
   const matrix = [
     ["/deepseek/v1/chat/completions", "https://api.deepseek.com/v1/chat/completions"],

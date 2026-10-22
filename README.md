@@ -395,6 +395,39 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)
 ```
 
+### OpenCode 自定义 Provider（推荐）
+
+OpenCode 内置的 `opencode` provider 会直连 OpenCode Zen，不经过本代理，因此代理的 SSE 终止块修复不会生效。要让 DeepSeek V4.1 Flash Free 等模型走代理，请在 `~/.config/opencode/opencode.jsonc` 中增加一个自定义 provider：
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "maxapi-zen": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "MaxAPI Zen",
+      "options": {
+        // 末尾不要带 /chat/completions，OpenCode 会自己拼接
+        "baseURL": "https://maxapi.yunluo.workers.dev/opencode_zen/v1"
+      },
+      "models": {
+        "deepseek-v4.1-flash-free": {
+          "name": "DeepSeek V4.1 Flash Free"
+        }
+      }
+    }
+  }
+}
+```
+
+然后使用 `maxapi-zen/deepseek-v4.1-flash-free`：
+
+```bash
+opencode run -m maxapi-zen/deepseek-v4.1-flash-free "你好"
+```
+
+免费 Zen 模型不需要填写 `apiKey`：上游免费层只校验 OpenCode 客户端身份头，带任意占位 key 反而会返回 `Invalid credential`，所以代理对 `-free` 模型（以及 `big-pickle`）会自动去掉 `Authorization`。付费 Zen 模型仍会透传客户端提供的真实 key。
+
 ### Token Plan 额度查询
 
 ```bash
@@ -429,7 +462,7 @@ bun test
 npm run dev      # Cloudflare Workers（wrangler dev）
 ```
 
-测试覆盖：缺失/空 API Key、provider 路由与查询串、`/token_plan` 前缀保留、未知 provider 与 `__proto__`、
+测试覆盖：缺失/空 API Key、OpenCode Zen 免费模型匿名请求与 key 透传、provider 路由与查询串、`/token_plan` 前缀保留、未知 provider 与 `__proto__`、
 multipart 原样透传、非法 JSON 返回 400、上游错误码/响应头保留、Anthropic ↔ OpenAI 双向转换
 （tool_result 顺序、`tool_choice: none`、图片 url、system/stop 映射）、流式事件序列与中途出错处理、
 OpenAI SSE 缺失 `finish_reason` / `[DONE]` 时的终止块补齐（含 CRLF、跨 chunk 拆行、实时转发、错误流不伪造成功）、
@@ -448,6 +481,7 @@ Anthropic 转换路径在缺少 `finish_reason` 时的 `tool_use` 推断。
 - 代理会按白名单透传少量头（`x-opencode-session`、`x-opencode-session-id`、`x-opencode-parent-session-id`、`x-opencode-client`、`x-opencode-project`、`x-opencode-request`、`x-session-id`、`x-session-affinity`、`x-parent-session-id`、`user-agent`、`HTTP-Referer`、`X-Title`），不会转发 `host`/`cookie` 等敏感头
 - `/opencode`、`/opencode_anthropic`（Go 网关 `zen/go/v1`）与 `/opencode_zen`（`zen/v1`）都要求会话头：Go 缺失时返回 400 `MissingSessionID`，Zen 免费模型还会校验 `x-opencode-session` 的格式（`ses_` + 12 位十六进制 + 14 位 base62）。客户端自带的会话值格式合法就沿用，否则（包括 opencode 接自定义 provider 时只发 `x-session-id`、或旧版派生出的 `ses_<8位十六进制>`）由代理重新补一个合法值：按 `apiKey + model + 首条用户消息` 派生，同一对话的每一轮都得到同一个 id（保留上游路由与提示缓存亲和）
 - `/opencode_zen`（`zen/v1`）的免费模型还有客户端校验：`User-Agent` 必须是 `opencode/<版本>`，且请求要是正常的编码代理请求（带工具）。opencode 自己发出的请求满足这些条件，代理原样透传 `user-agent` 并补齐会话头即可；但若代理链路外层的运行时会改写 `User-Agent`（例如某些边缘平台），或客户端用了禁用 `bash`/`read` 的受限 agent，上游仍会返回 403 `FreeTierError`，这属于上游策略，代理无法绕过
+- `/opencode_zen` 的免费模型允许匿名请求：上游免费层不需要 API Key，带上任意占位 key 反而会返回 `Invalid credential`，因此代理对 `-free` 模型（以及 `big-pickle`）不会发送 `Authorization`；付费 Zen 模型仍要求并透传真实 key
 - 非 JSON 请求体（如 `multipart/form-data` 文件上传）按字节原样透传；声明为 JSON 但解析失败会返回 400
 - 代理默认是开放中继（CORS `*`、无内置限流）。生产环境建议至少设置 `PROXY_ACCESS_TOKEN`（见上），并在 Cloudflare 侧配置 Rate Limiting，避免域名/免费额度被滥用
 - 上游连接有超时保护：等响应头默认 300 秒（`UPSTREAM_TIMEOUT_MS`），流式空闲默认 120 秒（`STREAM_IDLE_TIMEOUT_MS`）。响应头阶段超时返回 504，网络不可达返回 502；两者都不会把上游的原始错误细节回显给客户端
