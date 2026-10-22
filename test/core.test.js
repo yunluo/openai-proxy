@@ -964,7 +964,8 @@ test("SSE 修复：上游在流内报错时不补成功终止块", async () => {
     const out = await res.text();
     assert.match(out, /upstream failed/);
     assert.ok(!out.includes('"finish_reason"'));
-    assert.ok(!out.includes("data: [DONE]"));
+    // 原始 error 事件已能让客户端识别失败；仍要补 [DONE] 把流正常收尾
+    assert.ok(out.endsWith("data: [DONE]\n\n"));
   });
 });
 
@@ -984,8 +985,123 @@ test("SSE 修复：非 JSON 的 data 行视为上游报错，不伪造正常结�
     const out = await res.text();
     assert.match(out, /upstream overloaded/);
     assert.ok(!out.includes('"finish_reason"'));
-    assert.ok(!out.includes("data: [DONE]"));
+    // 客户端读不懂非 JSON 行，代理补一个 OpenAI 格式的 error 事件 + [DONE]
+    assert.match(out, /"error":\{"type":"upstream_stream_error"/);
+    assert.ok(out.endsWith("data: [DONE]\n\n"));
   });
+});
+
+test("SSE 修复：上游只发 [DONE] 时补 error 事件，不静默结束", async () => {
+  await withUpstream(sseUpstream("data: [DONE]\n\n"), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/opencode/v1/chat/completions", {
+        body: { model: "m", stream: true, messages: [] },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.text();
+    assert.match(out, /"error":\{"type":"upstream_stream_error"/);
+    assert.match(out, /ended without any content/);
+    assert.ok(!out.includes('"finish_reason"'));
+    assert.ok(out.endsWith("data: [DONE]\n\n"));
+  });
+});
+
+test("SSE 修复：上游返回空流时补 error 事件与 [DONE]", async () => {
+  await withUpstream(sseUpstream(""), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/opencode/v1/chat/completions", {
+        body: { model: "m", stream: true, messages: [] },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.text();
+    assert.match(out, /ended without any content/);
+    assert.ok(!out.includes('"finish_reason"'));
+    assert.ok(out.endsWith("data: [DONE]\n\n"));
+  });
+});
+
+test("SSE 修复：请求 stream 但上游返回 JSON 完成体时补成 SSE", async () => {
+  await withUpstream(
+    jsonResponse({
+      id: "cmpl-json",
+      object: "chat.completion",
+      created: 123,
+      model: "m",
+      choices: [
+        {
+          index: 0,
+          message: { role: "assistant", content: "hi" },
+          finish_reason: "stop",
+        },
+      ],
+      usage: { prompt_tokens: 1, completion_tokens: 1 },
+    }),
+    async () => {
+      const res = await handleProxyRequest(
+        proxyRequest("/opencode/v1/chat/completions", {
+          body: { model: "m", stream: true, messages: [] },
+        }),
+        makeOptions(),
+      );
+
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get("content-type"), "text/event-stream");
+      assert.equal(res.headers.get("content-length"), null);
+      const out = await res.text();
+      assert.match(out, /"delta":\{"role":"assistant","content":"hi"\}/);
+      assert.match(out, /"finish_reason":"stop"/);
+      assert.ok(out.endsWith("data: [DONE]\n\n"));
+    },
+  );
+});
+
+test("SSE 修复：请求 stream 但上游返回 200 JSON 错误时转成 SSE error", async () => {
+  await withUpstream(
+    jsonResponse({ error: { message: "quota exceeded" } }),
+    async () => {
+      const res = await handleProxyRequest(
+        proxyRequest("/opencode/v1/chat/completions", {
+          body: { model: "m", stream: true, messages: [] },
+        }),
+        makeOptions(),
+      );
+
+      assert.equal(res.status, 200);
+      const out = await res.text();
+      assert.match(
+        out,
+        /"error":\{"type":"upstream_error","message":"quota exceeded"/,
+      );
+      assert.ok(!out.includes('"finish_reason"'));
+      assert.ok(out.endsWith("data: [DONE]\n\n"));
+    },
+  );
+});
+
+test("JSON 响应：未请求 stream 时保持原样，不转 SSE", async () => {
+  await withUpstream(
+    jsonResponse({
+      choices: [
+        { index: 0, message: { role: "assistant", content: "hi" }, finish_reason: "stop" },
+      ],
+    }),
+    async () => {
+      const res = await handleProxyRequest(
+        proxyRequest("/opencode/v1/chat/completions", {
+          body: { model: "m", messages: [] },
+        }),
+        makeOptions(),
+      );
+
+      assert.match(res.headers.get("content-type"), /application\/json/);
+      const data = await res.json();
+      assert.equal(data.choices[0].message.content, "hi");
+    },
+  );
 });
 
 test("SSE 修复：兼容 CRLF 行结束符，且各事件顺序不变", async () => {

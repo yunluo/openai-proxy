@@ -863,6 +863,104 @@ function isValidFinishReason(value) {
   return typeof value === "string" && value.trim() !== "";
 }
 
+// 从上游错误字段里取出可读文本；对象/字符串/未知结构都尽量给出信息
+function errorMessageOf(value) {
+  if (!value) return "";
+  if (typeof value === "string") return value;
+  if (typeof value.message === "string") return value.message;
+  try {
+    return JSON.stringify(value);
+  } catch (_) {
+    return "";
+  }
+}
+
+// 客户端请求了 stream:true，但上游返回普通 JSON（有的网关会忽略 stream 参数）。
+// 直接透传 JSON 会让流式客户端认为「一个事件都没收到」，严格校验时正好报
+// "stream ended without finish_reason"。这里把完整响应包成一条 SSE 终止流。
+function buildChatSSEFromCompletion(data, fallbackModel) {
+  const id =
+    typeof data?.id === "string" && data.id
+      ? data.id
+      : `chatcmpl-proxy-${Date.now()}`;
+  const created = Number.isFinite(data?.created)
+    ? data.created
+    : Math.floor(Date.now() / 1000);
+  const model =
+    typeof data?.model === "string" && data.model
+      ? data.model
+      : fallbackModel || "";
+  const frames = [];
+
+  if (data?.error) {
+    frames.push(
+      `data: ${JSON.stringify({
+        error: {
+          type: "upstream_error",
+          message:
+            errorMessageOf(data.error) || "Upstream returned an error.",
+        },
+      })}\n\n`,
+    );
+  } else {
+    const choices = Array.isArray(data?.choices) ? data.choices : [];
+    if (choices.length === 0) {
+      frames.push(
+        `data: ${JSON.stringify({
+          error: {
+            type: "upstream_empty_stream",
+            message: "Upstream returned no choices.",
+          },
+        })}\n\n`,
+      );
+    } else {
+      for (const choice of choices) {
+        const message = choice?.message ?? choice?.delta ?? {};
+        const delta = { role: message.role || "assistant" };
+        if (
+          typeof message.reasoning_content === "string" &&
+          message.reasoning_content
+        ) {
+          delta.reasoning_content = message.reasoning_content;
+        }
+        if (typeof message.content === "string" && message.content) {
+          delta.content = message.content;
+        }
+        if (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
+          delta.tool_calls = message.tool_calls.map((tool, position) => ({
+            ...tool,
+            index: Number.isInteger(tool?.index) ? tool.index : position,
+          }));
+        }
+        const finishReason = isValidFinishReason(choice?.finish_reason)
+          ? choice.finish_reason
+          : delta.tool_calls
+            ? "tool_calls"
+            : "stop";
+        frames.push(
+          `data: ${JSON.stringify({
+            id,
+            object: "chat.completion.chunk",
+            created,
+            model,
+            choices: [
+              {
+                index: Number.isInteger(choice?.index) ? choice.index : 0,
+                delta,
+                finish_reason: finishReason,
+              },
+            ],
+            ...(data.usage ? { usage: data.usage } : {}),
+          })}\n\n`,
+        );
+      }
+    }
+  }
+
+  frames.push("data: [DONE]\n\n");
+  return frames.join("");
+}
+
 function normalizeOpenAIChatSSE(body, idleMs, fallbackModel) {
   const source = withIdleTimeout(body, idleMs);
   if (!source) return body;
@@ -875,8 +973,12 @@ function normalizeOpenAIChatSSE(body, idleMs, fallbackModel) {
   let sawToolCalls = false;
   let sawDone = false;
   // 上游在流内报错（data: {"error":…} 或非 JSON 的 data 行）：此时不能补成功终止块，
-  // 否则会把失败伪装成正常结束
-  let sawUpstreamError = false;
+  // 否则会把失败伪装成正常结束；但也不能让流静默结束，必须给客户端一个它能识别的
+  // 错误事件，否则严格客户端只会看到 “stream ended without finish_reason”。
+  let upstreamErrorMessage = "";
+  let upstreamErrorStructured = false;
+  // 是否已经补过终止事件（finish 块或 error 事件），避免 flush 重复补
+  let terminalEmitted = false;
   let lastId = "";
   let lastModel = fallbackModel || "";
   let lastChoiceIndex = 0;
@@ -894,6 +996,47 @@ function normalizeOpenAIChatSSE(body, idleMs, fallbackModel) {
         { index: lastChoiceIndex, delta: {}, finish_reason: finishReason },
       ],
     })}\n\n`;
+  };
+
+  const buildErrorChunk = (message) => {
+    const text = String(
+      message || "Upstream stream ended without a usable result.",
+    ).slice(0, 2000);
+    return `data: ${JSON.stringify({
+      error: {
+        type: "upstream_stream_error",
+        message: text,
+        code: 502,
+      },
+    })}\n\n`;
+  };
+
+  // 流结束时必须给客户端一个它能识别的终止事件：
+  // - 已有 finish_reason → 只补 [DONE]
+  // - 上游报错（且客户端无法从原始事件里读到 error）→ 补 OpenAI 格式的 error 事件
+  // - 收到过内容但没有 finish_reason → 补合成终止块
+  // - 什么都没收到 → 明确报「空流」，而不是静默结束
+  const finishTerminal = (controller, isDone) => {
+    if (!sawFinishReason && !terminalEmitted) {
+      if (upstreamErrorMessage || upstreamErrorStructured) {
+        if (!upstreamErrorStructured) {
+          emit(controller, buildErrorChunk(upstreamErrorMessage));
+        }
+      } else if (sawChoice) {
+        emit(controller, buildFinishChunk());
+        sawFinishReason = true;
+      } else {
+        emit(
+          controller,
+          buildErrorChunk("Upstream SSE stream ended without any content."),
+        );
+      }
+      terminalEmitted = true;
+    }
+    if (!isDone && !sawDone) {
+      emit(controller, "data: [DONE]\n\n");
+      sawDone = true;
+    }
   };
 
   const handleLine = (controller, line, isFinal) => {
@@ -916,10 +1059,25 @@ function normalizeOpenAIChatSSE(body, idleMs, fallbackModel) {
         chunk = JSON.parse(eventData);
       } catch (_) {
         // 非 JSON 的 data 行原样透传；内容流里出现这种行通常意味着上游报错
-        sawUpstreamError = true;
+        if (!upstreamErrorMessage) {
+          upstreamErrorMessage = `Upstream sent a non-JSON SSE data line: ${eventData.slice(0, 500)}`;
+        }
       }
       if (chunk) {
-        if (chunk.error || chunk.type === "error") sawUpstreamError = true;
+        if (chunk.error && typeof chunk.error === "object") {
+          // 客户端能直接读 event.error.message，原始事件已经足够
+          upstreamErrorStructured = true;
+          if (!upstreamErrorMessage) {
+            upstreamErrorMessage = errorMessageOf(chunk.error);
+          }
+        } else if (chunk.error || chunk.type === "error") {
+          if (!upstreamErrorMessage) {
+            upstreamErrorMessage =
+              errorMessageOf(chunk.error) ||
+              (typeof chunk.message === "string" ? chunk.message : "") ||
+              "Upstream reported an error.";
+          }
+        }
         if (typeof chunk.id === "string" && chunk.id) lastId = chunk.id;
         if (typeof chunk.model === "string" && chunk.model) {
           lastModel = chunk.model;
@@ -943,10 +1101,9 @@ function normalizeOpenAIChatSSE(body, idleMs, fallbackModel) {
       }
     }
 
-    // [DONE] 之前补终止块：保证结束块出现在所有内容块之后
-    if (isDone && sawChoice && !sawFinishReason && !sawUpstreamError) {
-      emit(controller, buildFinishChunk());
-      sawFinishReason = true;
+    // [DONE] 之前补终止事件：保证终止事件出现在所有内容块之后
+    if (isDone) {
+      finishTerminal(controller, true);
     }
 
     emit(controller, isFinal ? `${line}\n\n` : `${line}\n`);
@@ -964,16 +1121,8 @@ function normalizeOpenAIChatSSE(body, idleMs, fallbackModel) {
       flush(controller) {
         buffer += decoder.decode();
         if (buffer) handleLine(controller, buffer, true);
-        if (sawUpstreamError) return;
-        // 上游连 [DONE] 都没发：补终止块 + [DONE]
-        if (sawChoice && !sawFinishReason) {
-          emit(controller, buildFinishChunk());
-          sawFinishReason = true;
-        }
-        if (sawChoice && !sawDone) {
-          emit(controller, "data: [DONE]\n\n");
-          sawDone = true;
-        }
+        // 上游连 [DONE] 都没发：补终止事件 + [DONE]，绝不让流静默结束
+        finishTerminal(controller, false);
       },
     }),
   );
@@ -1408,6 +1557,28 @@ export async function handleProxyRequest(request, options = {}) {
   // ──── JSON 响应处理 ────
   if (contentType && contentType.includes("application/json")) {
     const data = JSON.parse(await readUpstreamText(response.body, idleTimeoutMs));
+
+    // 客户端请求了 stream:true，上游却返回 JSON：包成 SSE 终止流，避免客户端
+    // 因「零个事件」而报 stream ended without finish_reason。错误响应保留原
+    // 状态码，让客户端走正常的 HTTP 错误处理。
+    const wantsChatStream =
+      isJsonBody &&
+      requestBodyObj?.stream === true &&
+      !isOpenCodeAnthropic &&
+      !resolved.provider.endsWith("_anthropic") &&
+      OPENAI_CHAT_COMPLETIONS_PATH_RE.test(targetPath);
+    if (wantsChatStream && response.ok) {
+      const jsonStreamHeaders = copyResponseHeaders(
+        response,
+        "text/event-stream",
+      );
+      jsonStreamHeaders.set("Cache-Control", "no-cache");
+      jsonStreamHeaders.delete("Connection");
+      return new Response(
+        buildChatSSEFromCompletion(data, requestBodyObj?.model),
+        { status: 200, headers: jsonStreamHeaders },
+      );
+    }
 
     // OpenCode Anthropic：OpenAI 响应 → Anthropic 格式
     if (isOpenCodeAnthropic) {
