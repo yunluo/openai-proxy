@@ -857,6 +857,12 @@ async function* openAIStreamToAnthropicSSE(reader, requestModel) {
 // ──────────────────────────────────────────────
 const OPENAI_CHAT_COMPLETIONS_PATH_RE = /(?:^|\/)chat\/completions\/?$/;
 
+// finish_reason 只有在是「非空字符串」时才算有效。null / undefined 表示流尚未结束，
+// 空字符串则是一些上游的占位值；这两种情况都必须继续等待或由代理补终止块。
+function isValidFinishReason(value) {
+  return typeof value === "string" && value.trim() !== "";
+}
+
 function normalizeOpenAIChatSSE(body, idleMs, fallbackModel) {
   const source = withIdleTimeout(body, idleMs);
   if (!source) return body;
@@ -923,7 +929,12 @@ function normalizeOpenAIChatSSE(body, idleMs, fallbackModel) {
         for (const choice of choices) {
           if (!choice) continue;
           if (Number.isInteger(choice.index)) lastChoiceIndex = choice.index;
-          if (choice.finish_reason != null) sawFinishReason = true;
+          // 少数上游会用空字符串表示「尚未结束」（如 finish_reason:""）。
+          // 严格客户端会忽略它，若把它当成有效终止原因，就不会再补终止块，
+          // 最终报 "Stream ended without finish_reason"。
+          if (isValidFinishReason(choice.finish_reason)) {
+            sawFinishReason = true;
+          }
           const delta = choice.delta || choice.message;
           if (Array.isArray(delta?.tool_calls) && delta.tool_calls.length > 0) {
             sawToolCalls = true;

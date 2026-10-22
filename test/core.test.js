@@ -820,6 +820,48 @@ test("SSE 修复：上游缺 finish_reason 时在 [DONE] 前补合成终止块",
   });
 });
 
+test("SSE 修复：finish_reason 为空字符串时仍补合成终止块", async () => {
+  const sse =
+    'data: {"id":"chatcmpl-e","model":"m","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":""}]}\n\n' +
+    "data: [DONE]\n\n";
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/opencode/v1/chat/completions", {
+        body: { model: "m", stream: true, messages: [] },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.text();
+    // 上游的空字符串原样保留，但代理必须再补一个真正的终止块
+    assert.match(out, /"finish_reason":""/);
+    assert.equal((out.match(/"finish_reason":"stop"/g) || []).length, 1);
+    assert.ok(
+      out.indexOf('"finish_reason":"stop"') > out.indexOf('"content":"hi"'),
+    );
+    assert.ok(out.endsWith("data: [DONE]\n\n"));
+  });
+});
+
+test("SSE 修复：finish_reason 只有空白且无 [DONE] 时也补终止块", async () => {
+  const sse =
+    'data: {"id":"chatcmpl-blank","model":"m","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"   "}]}\n\n';
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/opencode_zen/v1/chat/completions", {
+        body: { model: "m", stream: true, messages: [] },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.text();
+    assert.match(out, /"finish_reason":"stop"/);
+    assert.ok(out.endsWith("data: [DONE]\n\n"));
+  });
+});
+
 test("SSE 修复：上游连 [DONE] 都没有时补终止块和 [DONE]", async () => {
   const sse =
     'data: {"id":"chatcmpl-y","model":"m","choices":[{"index":0,"delta":{"content":"hi"}}]}\n\n';
