@@ -46,17 +46,6 @@ async function readRequestBody(request) {
   }
 }
 
-// 将 Anthropic 图片来源转换为 OpenAI image_url
-// 支持 base64 与 url 两种 source；其它类型（file 等）返回 null 表示跳过
-function imageSourceToUrl(source) {
-  if (!source || typeof source !== "object") return null;
-  if (source.type === "url" && source.url) return source.url;
-  if (source.data && source.media_type) {
-    return `data:${source.media_type};base64,${source.data}`;
-  }
-  return null;
-}
-
 // 允许透传给上游的额外请求头白名单（不含认证头，认证头单独处理）
 const PASSTHROUGH_HEADERS = [
   "x-opencode-session", // OpenCode Zen Go 必需（会话路由/缓存亲和）
@@ -67,10 +56,14 @@ const PASSTHROUGH_HEADERS = [
   "x-opencode-request", // OpenCode 单次请求标识（上游归因）
   "x-session-id", // OpenCode Go 同样识别客户端原生会话头
   "x-session-affinity", // 同上
-  "x-parent-session-id", // 父会话（Claude Code 等）
+  "x-parent-session-id", // 父会话（通用）
   "user-agent", // 上游要求客户端自我标识（勿用通用 SDK 名）
   "http-referer", // OpenRouter 排行/归因
   "x-title", // OpenRouter 排行/归因
+  "openai-beta", // Responses API 旧版 beta 头（部分客户端仍会发送）
+  "openai-organization", // OpenAI 组织隔离
+  "openai-project", // OpenAI 项目隔离
+  "idempotency-key", // POST /responses 等请求的幂等键
 ];
 
 // 复制上游响应头，剔除因重新序列化 body 而不再匹配的字段
@@ -261,590 +254,6 @@ function checkAccessToken(request, options) {
   );
 }
 
-// 将上游错误映射为 Anthropic 风格的错误响应，并保留原始状态码
-function anthropicErrorResponse(status, error) {
-  const message =
-    typeof error?.message === "string"
-      ? error.message
-      : typeof error === "string"
-        ? error
-        : "Upstream request failed";
-  return new Response(
-    JSON.stringify({
-      type: "error",
-      error: { type: anthropicErrorType(status), message },
-    }),
-    {
-      status: typeof status === "number" && status >= 400 ? status : 502,
-      headers: { "Content-Type": "application/json" },
-    },
-  );
-}
-
-function anthropicErrorType(status) {
-  switch (status) {
-    case 400:
-    case 422:
-      return "invalid_request_error";
-    case 401:
-      return "authentication_error";
-    case 403:
-      return "permission_error";
-    case 404:
-      return "not_found_error";
-    case 413:
-      return "request_too_large";
-    case 429:
-      return "rate_limit_error";
-    case 529:
-      return "overloaded_error";
-    default:
-      return status >= 500 ? "api_error" : "invalid_request_error";
-  }
-}
-
-// 将 Anthropic Content Block 数组提取为纯文本
-function extractTextFromContent(content) {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .filter((b) => b.type === "text")
-    .map((b) => b.text)
-    .join("");
-}
-
-// ──────────────────────────────────────────────
-// Anthropic Messages API → OpenAI Chat Completions API 格式转换
-// ──────────────────────────────────────────────
-function anthropicToOpenAI(anthropicBody) {
-  const openaiBody = {
-    model: anthropicBody.model,
-    messages: [],
-  };
-
-  // 基础参数映射
-  if (anthropicBody.max_tokens != null)
-    openaiBody.max_tokens = anthropicBody.max_tokens;
-  if (anthropicBody.temperature != null)
-    openaiBody.temperature = anthropicBody.temperature;
-  if (anthropicBody.top_p != null) openaiBody.top_p = anthropicBody.top_p;
-  if (anthropicBody.stop_sequences != null)
-    openaiBody.stop = anthropicBody.stop_sequences;
-  if (anthropicBody.stream != null) openaiBody.stream = anthropicBody.stream;
-
-  // System prompt: Anthropic 顶层 → OpenAI system message
-  if (anthropicBody.system) {
-    const systemContent =
-      typeof anthropicBody.system === "string"
-        ? anthropicBody.system
-        : anthropicBody.system
-            .filter((b) => b.type === "text")
-            .map((b) => b.text)
-            .join("\n");
-    if (systemContent) {
-      openaiBody.messages.push({ role: "system", content: systemContent });
-    }
-  }
-
-  // 消息转换
-  for (const msg of anthropicBody.messages || []) {
-    if (typeof msg.content === "string") {
-      openaiBody.messages.push({ role: msg.role, content: msg.content });
-      continue;
-    }
-
-    if (!Array.isArray(msg.content)) {
-      openaiBody.messages.push({
-        role: msg.role,
-        content: msg.content || "",
-      });
-      continue;
-    }
-
-    // 分类 content blocks
-    const textParts = [];
-    const imageParts = [];
-    const toolResults = [];
-    const toolUses = [];
-
-    for (const block of msg.content) {
-      if (block.type === "text") {
-        textParts.push(block);
-      } else if (block.type === "image" && block.source) {
-        imageParts.push(block);
-      } else if (block.type === "tool_result") {
-        toolResults.push(block);
-      } else if (block.type === "tool_use") {
-        toolUses.push(block);
-      }
-      // 忽略 thinking / redacted_thinking / cache_control 等不支持的类型
-    }
-
-    if (msg.role === "user") {
-      // 用户消息：tool_result → tool 消息；文本+图片 → user 消息
-      //
-      // 顺序很关键：OpenAI 要求 role=tool 的消息必须紧跟带 tool_calls 的 assistant
-      // 消息。若把文本 user 消息插在中间，上游会直接报 400。因此先发全部 tool 消息。
-
-      // 每个 tool_result 生成一条独立的 tool 消息
-      for (const tr of toolResults) {
-        openaiBody.messages.push({
-          role: "tool",
-          tool_call_id: tr.tool_use_id,
-          content: extractTextFromContent(tr.content),
-        });
-      }
-
-      // 构造 user 消息（文本 + 图片）
-      if (textParts.length > 0 || imageParts.length > 0) {
-        if (imageParts.length > 0) {
-          // 包含图片时使用 OpenAI 多模态格式
-          const content = [];
-          for (const tp of textParts)
-            content.push({ type: "text", text: tp.text });
-          for (const img of imageParts) {
-            const url = imageSourceToUrl(img.source);
-            if (url) {
-              content.push({ type: "image_url", image_url: { url } });
-            }
-          }
-          openaiBody.messages.push({ role: "user", content });
-        } else {
-          openaiBody.messages.push({
-            role: "user",
-            content: textParts.map((b) => b.text).join("\n"),
-          });
-        }
-      }
-    } else if (msg.role === "assistant") {
-      // 助手消息：文本 + tool_use → assistant 消息
-      const openaiMsg = { role: "assistant" };
-
-      if (toolUses.length > 0) {
-        openaiMsg.content = textParts.map((b) => b.text).join("\n") || null;
-        openaiMsg.tool_calls = toolUses.map((tu) => ({
-          id: tu.id,
-          type: "function",
-          function: {
-            name: tu.name,
-            arguments: JSON.stringify(tu.input),
-          },
-        }));
-      } else if (textParts.length > 0) {
-        openaiMsg.content = textParts.map((b) => b.text).join("\n");
-      } else {
-        openaiMsg.content = null;
-      }
-
-      openaiBody.messages.push(openaiMsg);
-    } else {
-      // 其他角色（system 等）直接透传
-      const content = textParts.map((b) => b.text).join("\n") || "";
-      openaiBody.messages.push({ role: msg.role, content });
-    }
-  }
-
-  // Tools 转换
-  if (anthropicBody.tools) {
-    openaiBody.tools = anthropicBody.tools.map((t) => ({
-      type: "function",
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: t.input_schema,
-      },
-    }));
-  }
-
-  // Tool choice 转换
-  if (anthropicBody.tool_choice) {
-    const tc = anthropicBody.tool_choice;
-    if (tc.type === "auto") {
-      openaiBody.tool_choice = "auto";
-    } else if (tc.type === "any") {
-      openaiBody.tool_choice = "required";
-    } else if (tc.type === "tool") {
-      openaiBody.tool_choice = {
-        type: "function",
-        function: { name: tc.name },
-      };
-    } else if (tc.type === "none") {
-      // Anthropic 的 none = 禁止调用工具；OpenAI 有 tools 时默认是 auto，必须显式指定
-      openaiBody.tool_choice = "none";
-    }
-  }
-
-  return openaiBody;
-}
-
-// ──────────────────────────────────────────────
-// OpenAI Chat Completions 响应 → Anthropic Messages 响应 格式转换
-// ──────────────────────────────────────────────
-function openAIToAnthropic(data, requestModel) {
-  const choice = data.choices?.[0];
-  const message = choice?.message || {};
-
-  const content = [];
-
-  // 文本内容 → text block
-  if (message.content) {
-    content.push({ type: "text", text: message.content });
-  }
-
-  // Tool calls → tool_use blocks
-  if (message.tool_calls) {
-    for (const tc of message.tool_calls) {
-      let input = {};
-      try {
-        input = JSON.parse(tc.function.arguments || "{}");
-      } catch (_) {
-        input = {};
-      }
-      content.push({
-        type: "tool_use",
-        id: tc.id,
-        name: tc.function.name,
-        input: input,
-      });
-    }
-  }
-
-  // 保证至少一个内容块（Anthropic API 要求）
-  if (content.length === 0) {
-    content.push({ type: "text", text: "" });
-  }
-
-  // 确定 stop_reason
-  let stopReason = "end_turn";
-  if (choice?.finish_reason === "length") {
-    stopReason = "max_tokens";
-  } else if (
-    choice?.finish_reason === "tool_calls" ||
-    (message.tool_calls && message.tool_calls.length > 0)
-  ) {
-    // 只要消息里有 tool_use 块，Anthropic 客户端就要求 stop_reason=tool_use，
-    // 否则不会执行工具；finish_reason 缺失时也按内容判断
-    stopReason = "tool_use";
-  } else if (
-    choice?.finish_reason === "stop" ||
-    choice?.finish_reason == null
-  ) {
-    stopReason = "end_turn";
-  }
-
-  return {
-    id: data.id || "msg_" + Date.now(),
-    type: "message",
-    role: "assistant",
-    content: content,
-    model: data.model || requestModel,
-    stop_reason: stopReason,
-    stop_sequence: null,
-    usage: {
-      input_tokens: data.usage?.prompt_tokens || 0,
-      output_tokens: data.usage?.completion_tokens || 0,
-    },
-  };
-}
-
-// ──────────────────────────────────────────────
-// OpenAI SSE 流 → Anthropic SSE 流式转换（异步生成器）
-// 支持 text content 和 tool_calls 的流式输出
-//
-// 架构设计：
-// - try/catch 负责 SSE 数据解析的错误容忍
-// - 流结束事件在 try 块末尾自然发出（不依赖 finally 中的 yield）
-// - ReadableStream 消费端用 try/finally 确保 reader.releaseLock()
-// ──────────────────────────────────────────────
-async function* openAIStreamToAnthropicSSE(reader, requestModel) {
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let messageId = "msg_" + Date.now();
-  let model = requestModel;
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let finishReason = null;
-  let hasStarted = false;
-  // 流处理过程中的异常：不为空时在阶段二发出 Anthropic error 事件，
-  // 而不是把中断的流伪装成正常结束
-  let streamError = null;
-
-  // 文本块追踪
-  let textBlockOpen = false;
-  let textBlockIndex = -1;
-
-  // 内容块索引分配器
-  let nextBlockIndex = 0;
-
-  // Tool call 状态追踪：OpenAI tool_call index → Anthropic 内容块索引
-  const toolCallBlockMap = new Map();
-
-  // ──── 阶段一：读取并转换 SSE 数据 ────
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith("data:")) continue;
-        const data = trimmed.slice(5).trim();
-        if (!data || data === "[DONE]") continue;
-
-        let chunk;
-        try {
-          chunk = JSON.parse(data);
-        } catch (_) {
-          continue;
-        }
-
-        const choice = chunk.choices?.[0];
-        if (!choice) continue;
-
-        const delta = choice.delta || {};
-
-        // 事件：message_start（首个有效 chunk 时发出）
-        if (!hasStarted) {
-          if (chunk.model) model = chunk.model;
-          if (chunk.usage?.prompt_tokens)
-            inputTokens = chunk.usage.prompt_tokens;
-          messageId = chunk.id || messageId;
-
-          yield `event: message_start\ndata: ${JSON.stringify({
-            type: "message_start",
-            message: {
-              id: messageId,
-              type: "message",
-              role: "assistant",
-              content: [],
-              model: model,
-              stop_reason: null,
-              stop_sequence: null,
-              usage: { input_tokens: inputTokens, output_tokens: 0 },
-            },
-          })}\n\n`;
-
-          hasStarted = true;
-        }
-
-        // 事件：文本内容增量
-        if (delta.content != null && delta.content !== "") {
-          // 打开文本块（如果尚未打开）
-          if (!textBlockOpen) {
-            textBlockOpen = true;
-            textBlockIndex = nextBlockIndex;
-            nextBlockIndex++;
-            yield `event: content_block_start\ndata: ${JSON.stringify({
-              type: "content_block_start",
-              index: textBlockIndex,
-              content_block: { type: "text", text: "" },
-            })}\n\n`;
-          }
-
-          yield `event: content_block_delta\ndata: ${JSON.stringify({
-            type: "content_block_delta",
-            index: textBlockIndex,
-            delta: { type: "text_delta", text: delta.content },
-          })}\n\n`;
-        }
-
-        // 事件：Tool call 增量
-        if (delta.tool_calls) {
-          // 关闭文本块（如果有），因为接下来要发 tool_use 块
-          if (textBlockOpen) {
-            textBlockOpen = false;
-            yield `event: content_block_stop\ndata: ${JSON.stringify({
-              type: "content_block_stop",
-              index: textBlockIndex,
-            })}\n\n`;
-          }
-
-          for (const tc of delta.tool_calls) {
-            const tcIndex = tc.index ?? toolCallBlockMap.size;
-
-            if (!toolCallBlockMap.has(tcIndex)) {
-              // 新的 tool call → 打开新的 tool_use 内容块
-              const blockIndex = nextBlockIndex;
-              const id = tc.id || `toolu_${Date.now()}_${tcIndex}`;
-              const name = tc.function?.name || "";
-              toolCallBlockMap.set(tcIndex, {
-                blockIndex,
-                id,
-                name,
-              });
-              nextBlockIndex++;
-
-              yield `event: content_block_start\ndata: ${JSON.stringify({
-                type: "content_block_start",
-                index: blockIndex,
-                content_block: {
-                  type: "tool_use",
-                  id: id,
-                  name: name,
-                  input: {},
-                },
-              })}\n\n`;
-
-              // 首个 chunk 可能包含部分 arguments
-              if (tc.function?.arguments) {
-                yield `event: content_block_delta\ndata: ${JSON.stringify({
-                  type: "content_block_delta",
-                  index: blockIndex,
-                  delta: {
-                    type: "input_json_delta",
-                    partial_json: tc.function.arguments,
-                  },
-                })}\n\n`;
-              }
-            } else {
-              // 续传 tool call arguments
-              const state = toolCallBlockMap.get(tcIndex);
-              if (tc.function?.arguments) {
-                yield `event: content_block_delta\ndata: ${JSON.stringify({
-                  type: "content_block_delta",
-                  index: state.blockIndex,
-                  delta: {
-                    type: "input_json_delta",
-                    partial_json: tc.function.arguments,
-                  },
-                })}\n\n`;
-              }
-            }
-          }
-        }
-
-        // Usage 追踪
-        if (chunk.usage?.completion_tokens)
-          outputTokens = chunk.usage.completion_tokens;
-        if (chunk.usage?.prompt_tokens && inputTokens === 0)
-          inputTokens = chunk.usage.prompt_tokens;
-
-        // Finish reason 追踪
-        if (choice.finish_reason) {
-          finishReason = choice.finish_reason;
-        }
-      }
-    }
-  } catch (error) {
-    // 流式处理中的异常：记录后在阶段二发出 error 事件，
-    // 让客户端知道这是失败而不是正常结束
-    streamError = error;
-  }
-
-  // ──── 阶段二：发出 Anthropic 协议要求的结束事件 ────
-  // 注意：这些 yield 代码在 try 块之外，不属于 try/finally 范围，
-  // 因此在生成器被正常消费时会可靠执行。
-
-  // 上游/解析异常 → 发 error 事件并终止（Anthropic 协议中 error 事件即流终止）
-  if (streamError) {
-    yield `event: error\ndata: ${JSON.stringify({
-      type: "error",
-      error: {
-        type: "api_error",
-        message:
-          streamError instanceof Error
-            ? streamError.message
-            : "Stream processing error",
-      },
-    })}\n\n`;
-    return;
-  }
-
-  if (!hasStarted) {
-    // 极端情况：未收到任何有效的 SSE 数据，发出一条最小化响应
-    yield `event: message_start\ndata: ${JSON.stringify({
-      type: "message_start",
-      message: {
-        id: messageId,
-        type: "message",
-        role: "assistant",
-        content: [],
-        model: model,
-        stop_reason: "end_turn",
-        stop_sequence: null,
-        usage: { input_tokens: 0, output_tokens: 0 },
-      },
-    })}\n\n`;
-
-    yield `event: content_block_start\ndata: ${JSON.stringify({
-      type: "content_block_start",
-      index: 0,
-      content_block: { type: "text", text: "" },
-    })}\n\n`;
-
-    yield `event: content_block_delta\ndata: ${JSON.stringify({
-      type: "content_block_delta",
-      index: 0,
-      delta: { type: "text_delta", text: "" },
-    })}\n\n`;
-
-    yield `event: content_block_stop\ndata: ${JSON.stringify({
-      type: "content_block_stop",
-      index: 0,
-    })}\n\n`;
-
-    yield `event: message_delta\ndata: ${JSON.stringify({
-      type: "message_delta",
-      delta: { stop_reason: "end_turn", stop_sequence: null },
-      usage: { output_tokens: 0 },
-    })}\n\n`;
-
-    yield `event: message_stop\ndata: ${JSON.stringify({
-      type: "message_stop",
-    })}\n\n`;
-    return;
-  }
-
-  // 关闭文本块（如果仍打开）
-  if (textBlockOpen) {
-    textBlockOpen = false;
-    yield `event: content_block_stop\ndata: ${JSON.stringify({
-      type: "content_block_stop",
-      index: textBlockIndex,
-    })}\n\n`;
-  }
-
-  // 关闭所有 tool_use 内容块
-  for (const [, state] of toolCallBlockMap) {
-    yield `event: content_block_stop\ndata: ${JSON.stringify({
-      type: "content_block_stop",
-      index: state.blockIndex,
-    })}\n\n`;
-  }
-
-  // 确定 stop_reason（异常时视为 end_turn）
-  let stopReason = "end_turn";
-  if (finishReason === "length") {
-    stopReason = "max_tokens";
-  } else if (finishReason === "tool_calls" || toolCallBlockMap.size > 0) {
-    // 流里已经输出过 tool_use 块时，即使上游漏了 finish_reason 也必须告诉
-    // Anthropic 客户端去执行工具（否则会被当成普通 end_turn）
-    stopReason = "tool_use";
-  }
-
-  // 事件：message_delta（最终 stop_reason + token 数）
-  // message_start 先于 usage 到达，input_tokens 只有在已知时才补报
-  const finalUsage = { output_tokens: outputTokens };
-  if (inputTokens > 0) finalUsage.input_tokens = inputTokens;
-
-  yield `event: message_delta\ndata: ${JSON.stringify({
-    type: "message_delta",
-    delta: { stop_reason: stopReason, stop_sequence: null },
-    usage: finalUsage,
-  })}\n\n`;
-
-  // 事件：message_stop
-  yield `event: message_stop\ndata: ${JSON.stringify({
-    type: "message_stop",
-  })}\n\n`;
-}
-
-// ──────────────────────────────────────────────
 // OpenAI 兼容 SSE 的终止块修复
 //
 // 部分上游（例如 OpenCode Zen 的 muse 模型）在内容发完后直接关闭流：既没有带
@@ -856,6 +265,11 @@ async function* openAIStreamToAnthropicSSE(reader, requestModel) {
 // 并补上缺失的 [DONE]；内容块与其余字段原样逐行转发，不改写已有事件。
 // ──────────────────────────────────────────────
 const OPENAI_CHAT_COMPLETIONS_PATH_RE = /(?:^|\/)chat\/completions\/?$/;
+
+// OpenAI Responses API 路径：/responses、/responses/{id}、/responses/{id}/cancel、
+// /responses/{id}/input_items 等。Responses 的 SSE 事件（response.*）与 Chat 的
+// 终止块修复互不兼容，必须原样透传，不能被 Chat 逻辑改写。
+const OPENAI_RESPONSES_PATH_RE = /(?:^|\/)responses(?:\/|$)/;
 
 // finish_reason 只有在是「非空字符串」时才算有效。null / undefined 表示流尚未结束，
 // 空字符串则是一些上游的占位值；这两种情况都必须继续等待或由代理补终止块。
@@ -1148,6 +562,21 @@ function isMiniMaxPlanPath(path) {
   );
 }
 
+// 是否为 Responses API 路径（/responses、/responses/{id}、/responses/{id}/input_items 等）
+function isResponsesApiPath(path) {
+  return path === "/responses" || path.startsWith("/responses/");
+}
+
+// 缺少 provider 前缀时的统一错误：/v1/... 不再隐式回退到 MiniMax
+function missingProviderPrefix(path) {
+  return {
+    error: true,
+    status: 400,
+    type: "invalid_request_error",
+    message: `Provider prefix is required. Use /{provider}${path} (e.g. /minimax${path}).`,
+  };
+}
+
 // ──────────────────────────────────────────────
 // 根据请求路径解析出目标 provider 和实际请求路径
 // ──────────────────────────────────────────────
@@ -1167,6 +596,34 @@ function resolveProvider(originalPath, options) {
     const providerName = match[1].toLowerCase();
     const strippedPath = match[3] || ""; // 去掉 provider 前缀后的实际路径
 
+    // 裸 /v1/responses 与 /v1/chat/completions 是 OpenAI 默认协议入口：
+    // 不带 provider 前缀时直接走 gpt；其它裸 /v1/* 仍需显式前缀。
+    const isBareOpenAIPath =
+      /^v\d+$/.test(providerName) &&
+      (strippedPath === "/responses" ||
+        strippedPath.startsWith("/responses/") ||
+        strippedPath === "/chat/completions" ||
+        strippedPath === "/chat/completions/");
+
+    if (isBareOpenAIPath) {
+      const gpt = options.providers?.gpt;
+      const bareResponses = strippedPath === "/responses" || strippedPath.startsWith("/responses/");
+      const gptBase = bareResponses
+        ? gpt?.responsesApiBase || gpt?.apiBase
+        : gpt?.apiBase;
+      if (!gptBase) {
+        return {
+          error: true,
+          message: "Default OpenAI provider (gpt) is not configured",
+        };
+      }
+      return {
+        provider: "gpt",
+        targetBase: gptBase,
+        strippedPath,
+      };
+    }
+
     // 用 hasOwn 判断，避免 /__proto__/v1/... 之类的路径命中 Object.prototype
     const provider =
       options.providers && Object.hasOwn(options.providers, providerName)
@@ -1175,29 +632,23 @@ function resolveProvider(originalPath, options) {
     if (provider) {
       return {
         provider: providerName,
-        targetBase: provider.apiBase,
+        targetBase: isResponsesApiPath(strippedPath)
+          ? provider.responsesApiBase || provider.apiBase
+          : provider.apiBase,
         strippedPath,
       };
     }
 
-    // 路径以 /v{数字} 开头（如 /v1/chat/completions）→ 默认走 MiniMax
+    // 其它 /v1/... 路径没有 provider 前缀：直接报错
     if (/^v\d+$/.test(providerName)) {
-      return {
-        provider: "minimax",
-        targetBase: options.providers?.minimax?.apiBase,
-        strippedPath,
-      };
+      return missingProviderPrefix(originalPath);
     }
 
     return { error: true, message: `Unknown provider: ${providerName}` };
   }
 
-  // 无 provider 前缀时，默认走 MiniMax
-  return {
-    provider: "minimax",
-    targetBase: options.providers?.minimax?.apiBase,
-    strippedPath: originalPath,
-  };
+  // 其它无法识别出 provider 的路径（包括 /）同样要求显式前缀
+  return missingProviderPrefix(originalPath);
 }
 
 // 构建模型列表响应（OpenAI /v1/models 格式）
@@ -1234,7 +685,7 @@ export async function handleProxyRequest(request, options = {}) {
   const denied = checkAccessToken(request, options);
   if (denied) return denied;
 
-  // 从请求头中提取 API Key（兼容 OpenAI Bearer 和 Anthropic x-api-key）
+  // 从请求头中提取 API Key（兼容 OpenAI Bearer 和通用 x-api-key）
   const authHeader = getHeader(request.headers, "authorization");
   let apiKey = null;
   if (authHeader) {
@@ -1286,11 +737,14 @@ export async function handleProxyRequest(request, options = {}) {
     return new Response(
       JSON.stringify({
         error: {
-          type: "not_found",
+          type: resolved.type || "not_found",
           message: resolved.message,
         },
       }),
-      { status: 404, headers: { "Content-Type": "application/json" } },
+      {
+        status: resolved.status || 404,
+        headers: { "Content-Type": "application/json" },
+      },
     );
   }
 
@@ -1306,37 +760,12 @@ export async function handleProxyRequest(request, options = {}) {
     );
   }
 
-  // 是否为需要 Anthropic → OpenAI 格式互转的 opencode_anthropic
-  const isOpenCodeAnthropic = resolved.provider === "opencode_anthropic";
-
-  // 构建转发请求头（根据目标 provider 类型选择认证方式）
+  // 构建转发请求头：OpenAI 兼容端点使用 Bearer 认证
   const headers = {
     "Content-Type": "application/json",
   };
 
-  if (isOpenCodeAnthropic) {
-    // OpenCode Go Anthropic：转换为 OpenAI 格式后使用 Bearer 认证
-    headers["Authorization"] = `Bearer ${apiKey}`;
-  } else if (resolved.provider.endsWith("_anthropic")) {
-    // 其他 Anthropic 原生端点（minimax_anthropic, deepseek_anthropic）：透传 x-api-key
-    headers["x-api-key"] = apiKey;
-    const anthropicVersion = getHeader(request.headers, "anthropic-version");
-    if (anthropicVersion) {
-      headers["anthropic-version"] = anthropicVersion;
-    }
-    const anthropicBeta = getHeader(request.headers, "anthropic-beta");
-    if (anthropicBeta) {
-      headers["anthropic-beta"] = anthropicBeta;
-    }
-    const anthropicDangerous = getHeader(
-      request.headers,
-      "anthropic-dangerous-direct-browser-access",
-    );
-    if (anthropicDangerous) {
-      headers["anthropic-dangerous-direct-browser-access"] = anthropicDangerous;
-    }
-  } else if (apiKey) {
-    // OpenAI 兼容端点：使用 Authorization Bearer 认证
+  if (apiKey) {
     headers["Authorization"] = `Bearer ${apiKey}`;
   }
 
@@ -1392,17 +821,7 @@ export async function handleProxyRequest(request, options = {}) {
   // 目标 URL = provider 基础地址（去掉尾部斜杠）+ 实际路径 + 查询串
   const base = String(resolved.targetBase).replace(/\/+$/, "");
 
-  // opencode_anthropic：Anthropic → OpenAI 格式转换
-  if (isOpenCodeAnthropic && isJsonBody) {
-    requestBodyObj = anthropicToOpenAI(requestBodyObj);
-    body = JSON.stringify(requestBodyObj);
-  }
-
-  // opencode_anthropic：路径转换 /messages → /chat/completions
-  let targetPath = resolved.strippedPath;
-  if (isOpenCodeAnthropic) {
-    targetPath = targetPath.replace(/\/messages\/?$/, "/chat/completions");
-  }
+  const targetPath = resolved.strippedPath;
 
   // OpenCode Zen / Go 网关的会话头：Go 缺了直接 400 MissingSessionID，Zen 免费
   // 模型还会校验格式。opencode 把代理当自定义 provider 时只发 x-session-id /
@@ -1476,75 +895,21 @@ export async function handleProxyRequest(request, options = {}) {
   // 或 Accept 头触发的 SSE（那样会被错误地整体缓冲）
   const isSSE = !!response.body && !!contentType?.includes("text/event-stream");
 
+  // Responses API 与 Chat Completions 都是原生协议：Responses 的 SSE 逐事件原样
+  // 透传，只有 Chat Completions 才做终止块修复。
+  const isResponsesPath = OPENAI_RESPONSES_PATH_RE.test(targetPath);
+
   // 客户端明确要求流式 Chat Completions：无论上游实际返回什么，最终都要给
   // 客户端一条带终止事件的 SSE，绝不能让它收到「零个事件」的 200 响应。
   const wantsChatStream =
     isJsonBody &&
     requestBodyObj?.stream === true &&
-    !resolved.provider.endsWith("_anthropic") &&
+    !isResponsesPath &&
     OPENAI_CHAT_COMPLETIONS_PATH_RE.test(targetPath);
 
   // ──── 流式响应处理 ────
   if (isSSE) {
-    if (isOpenCodeAnthropic) {
-      // OpenCode Anthropic：OpenAI SSE → Anthropic SSE 流式转换
-      const reader = withIdleTimeout(response.body, idleTimeoutMs).getReader();
-      const stream = new ReadableStream({
-        async start(controller) {
-          const encoder = new TextEncoder();
-          try {
-            for await (const chunk of openAIStreamToAnthropicSSE(
-              reader,
-              requestBodyObj.model,
-            )) {
-              controller.enqueue(encoder.encode(chunk));
-            }
-            controller.close();
-          } catch (error) {
-            // 尝试发送 Anthropic 格式错误事件
-            try {
-              controller.enqueue(
-                encoder.encode(
-                  `event: error\ndata: ${JSON.stringify({
-                    type: "error",
-                    error: {
-                      type: "api_error",
-                      message: "Stream processing error",
-                    },
-                  })}\n\n`,
-                ),
-              );
-            } catch (_) {
-              // 无法写入，跳过
-            }
-            try {
-              controller.error(error);
-            } catch (_) {
-              // controller 可能已关闭
-            }
-          } finally {
-            reader.releaseLock();
-          }
-        },
-        // 客户端断开时取消上游读取，避免上游连接继续烧 token
-        async cancel() {
-          try {
-            await reader.cancel();
-          } catch (_) {
-            // 上游已结束
-          }
-        },
-      });
-      return new Response(stream, {
-        status: response.ok ? 200 : response.status,
-        headers: {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
-        },
-      });
-    }
-
-    // 其他 provider：直接透传 SSE 流
+    // 直接透传 SSE 流
     // 运行时（Workers/undici）会自动解压上游的 gzip，上游的 content-length /
     // content-encoding 因此不再匹配实际字节数，必须剔除后再转发
     const streamHeaders = copyResponseHeaders(response, "text/event-stream");
@@ -1552,10 +917,10 @@ export async function handleProxyRequest(request, options = {}) {
     streamHeaders.delete("Connection");
 
     // OpenAI Chat Completions 流：修复上游缺失的 finish_reason / [DONE]，
-    // 否则严格客户端会把正常结束当成中断。Anthropic 原生 SSE 不适用。
+    // 否则严格客户端会把正常结束当成中断。Responses 事件不做任何改写。
     const needsChatStreamFix =
       response.ok &&
-      !resolved.provider.endsWith("_anthropic") &&
+      !isResponsesPath &&
       OPENAI_CHAT_COMPLETIONS_PATH_RE.test(targetPath);
     const streamBody = needsChatStreamFix
       ? normalizeOpenAIChatSSE(
@@ -1591,20 +956,6 @@ export async function handleProxyRequest(request, options = {}) {
       );
     }
 
-    // OpenCode Anthropic：OpenAI 响应 → Anthropic 格式
-    if (isOpenCodeAnthropic) {
-      // 上游错误（401/429/400/500…）必须原样透出状态码与信息，
-      // 否则会被 openAIToAnthropic 伪造成「内容为空的成功响应」
-      if (!response.ok || data?.error) {
-        return anthropicErrorResponse(response.status, data?.error);
-      }
-      const anthropicData = openAIToAnthropic(data, requestBodyObj.model);
-      return new Response(JSON.stringify(anthropicData), {
-        status: response.status,
-        headers: copyResponseHeaders(response, "application/json"),
-      });
-    }
-
     // DeepSeek 特殊处理：补全缺失的 reasoning_content 字段
     if (resolved.provider === "deepseek" && data.choices?.[0]?.message) {
       const msg = data.choices[0].message;
@@ -1622,6 +973,18 @@ export async function handleProxyRequest(request, options = {}) {
     return new Response(JSON.stringify(data), {
       status: response.status,
       headers: copyResponseHeaders(response, "application/json"),
+    });
+  }
+
+  // DELETE /responses/{id} 等端点可能返回 204/205/304；这些状态不允许 body
+  if (
+    response.status === 204 ||
+    response.status === 205 ||
+    response.status === 304
+  ) {
+    return new Response(null, {
+      status: response.status,
+      headers: copyResponseHeaders(response, null),
     });
   }
 

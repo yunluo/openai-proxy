@@ -2,7 +2,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { handleProxyRequest } from "../src/core.js";
-import { PROVIDERS } from "../src/config.js";
 
 const PROXY_ORIGIN = "https://proxy.example";
 
@@ -10,13 +9,25 @@ const PROXY_ORIGIN = "https://proxy.example";
 function makeOptions(overrides = {}) {
   return {
     providers: {
-      minimax: { apiBase: "https://api.minimaxi.com/v1" },
-      deepseek: { apiBase: "https://api.deepseek.com/v1" },
-      glm: { apiBase: "https://open.bigmodel.cn/api/paas/v4" },
-      deepseek_anthropic: { apiBase: PROVIDERS.deepseek_anthropic.default },
+      minimax: {
+        apiBase: "https://api.minimaxi.com/v1",
+        responsesApiBase: "https://api.minimax.cn/v1",
+      },
+      deepseek: {
+        apiBase: "https://api.deepseek.com/v1",
+        responsesApiBase: "https://api.deepseek.com",
+      },
+      glm: {
+        apiBase: "https://open.bigmodel.cn/api/paas/v4",
+        responsesApiBase: "https://open.bigmodel.cn/api/v1",
+      },
+      gpt: { apiBase: "https://api.openai.com/v1" },
+      volcengine: {
+        apiBase: "https://ark.cn-beijing.volces.com/api/coding/v3",
+        responsesApiBase: "https://ark.cn-beijing.volces.com/api/coding/v3",
+      },
       opencode: { apiBase: "https://opencode.ai/zen/go/v1" },
       opencode_zen: { apiBase: "https://opencode.ai/zen/v1" },
-      opencode_anthropic: { apiBase: "https://opencode.ai/zen/go/v1" },
       ...overrides,
     },
     apiBaseWww: "https://www.minimaxi.com",
@@ -67,6 +78,12 @@ function jsonResponse(data, status = 200, headers = {}) {
   });
 }
 
+function sseUpstream(text) {
+  return new Response(text, {
+    headers: { "content-type": "text/event-stream" },
+  });
+}
+
 // 发起一次代理请求
 function proxyRequest(path, { key = "test-key", method = "POST", body, headers = {} } = {}) {
   const init = { method, headers: { ...headers } };
@@ -87,7 +104,7 @@ function proxyRequest(path, { key = "test-key", method = "POST", body, headers =
 test("缺少 API Key 时返回 401，且不请求上游", async () => {
   await withUpstream(jsonResponse({}), async (calls) => {
     const res = await handleProxyRequest(
-      proxyRequest("/v1/chat/completions", { key: null, body: { model: "m" } }),
+      proxyRequest("/minimax/v1/chat/completions", { key: null, body: { model: "m" } }),
       makeOptions(),
     );
     assert.equal(res.status, 401);
@@ -209,16 +226,10 @@ test("路由：/{provider}/v1/* 剥离前缀并拼接 provider 基址", async ()
   const matrix = [
     ["/deepseek/v1/chat/completions", "https://api.deepseek.com/v1/chat/completions"],
     ["/glm/v1/chat/completions", "https://open.bigmodel.cn/api/paas/v4/chat/completions"],
-    ["/v1/chat/completions", "https://api.minimaxi.com/v1/chat/completions"],
-    [
-      "/deepseek_anthropic/v1/messages",
-      "https://api.deepseek.com/anthropic/v1/messages",
-    ],
-    ["/minimax_anthropic/v1/messages", null], // 未配置的 provider 单独跳过
+    ["/minimax/v1/chat/completions", "https://api.minimaxi.com/v1/chat/completions"],
   ];
 
   for (const [path, expected] of matrix) {
-    if (!expected) continue;
     await withUpstream(jsonResponse({ ok: true }), async (calls) => {
       const res = await handleProxyRequest(
         proxyRequest(path, { body: { model: "m", messages: [] } }),
@@ -315,7 +326,7 @@ test("非 JSON（multipart）请求体按字节原样透传", async () => {
     `--${boundary}--\r\n`;
 
   await withUpstream(jsonResponse({ ok: true }), async (calls) => {
-    const req = new Request(`${PROXY_ORIGIN}/v1/audio/transcriptions`, {
+    const req = new Request(`${PROXY_ORIGIN}/minimax/v1/audio/transcriptions`, {
       method: "POST",
       headers: {
         authorization: "Bearer k",
@@ -337,7 +348,7 @@ test("非 JSON（multipart）请求体按字节原样透传", async () => {
 
 test("非法 JSON 返回 400，且不请求上游", async () => {
   await withUpstream(jsonResponse({ ok: true }), async (calls) => {
-    const req = new Request(`${PROXY_ORIGIN}/v1/chat/completions`, {
+    const req = new Request(`${PROXY_ORIGIN}/minimax/v1/chat/completions`, {
       method: "POST",
       headers: { authorization: "Bearer k", "content-type": "application/json" },
       body: '{"model": "m",',
@@ -376,16 +387,16 @@ test("x-opencode-session 等白名单头会透传给上游", async () => {
   const session = "ses_ea8e062a1ffef1R1BHXWtidHvn";
   await withUpstream(jsonResponse({ ok: true }), async (calls) => {
     await handleProxyRequest(
-      proxyRequest("/opencode_anthropic/v1/messages", {
+      proxyRequest("/opencode/v1/chat/completions", {
         headers: {
           "x-opencode-session": session,
           "x-session-id": "sess-2",
           "x-opencode-client": "cli",
           "x-opencode-project": "global",
-          "user-agent": "claude-cli/2.0.0",
+          "user-agent": "opencode/1.0.0",
           "HTTP-Referer": "https://app",
         },
-        body: { model: "m", max_tokens: 1, messages: [] },
+        body: { model: "m", messages: [] },
       }),
       makeOptions(),
     );
@@ -393,7 +404,7 @@ test("x-opencode-session 等白名单头会透传给上游", async () => {
     assert.equal(calls[0].headers["x-opencode-client"], "cli");
     assert.equal(calls[0].headers["x-opencode-project"], "global");
     assert.equal(calls[0].headers["x-session-id"], "sess-2");
-    assert.equal(calls[0].headers["user-agent"], "claude-cli/2.0.0");
+    assert.equal(calls[0].headers["user-agent"], "opencode/1.0.0");
     assert.equal(calls[0].headers["http-referer"], "https://app");
     // 不应该透传敏感头
     assert.equal(calls[0].headers.cookie, undefined);
@@ -401,347 +412,7 @@ test("x-opencode-session 等白名单头会透传给上游", async () => {
   });
 });
 
-// ──────────────────────────────────────────────
-// Anthropic ↔ OpenAI 格式互转
-// ──────────────────────────────────────────────
-
-test("opencode_anthropic：上游错误原样透出，不再伪装成 200", async () => {
-  await withUpstream(
-    jsonResponse({ error: { message: "bad key", type: "invalid_api_key" } }, 401),
-    async (calls) => {
-      const res = await handleProxyRequest(
-        proxyRequest("/opencode_anthropic/v1/messages", {
-          body: { model: "m", max_tokens: 8, messages: [{ role: "user", content: "hi" }] },
-        }),
-        makeOptions(),
-      );
-      assert.equal(res.status, 401);
-      const data = await res.json();
-      assert.equal(data.type, "error");
-      assert.equal(data.error.type, "authentication_error");
-      assert.equal(data.error.message, "bad key");
-      assert.equal(calls[0].url, "https://opencode.ai/zen/go/v1/chat/completions");
-    },
-  );
-});
-
-test("opencode_anthropic：429 映射为 rate_limit_error", async () => {
-  await withUpstream(jsonResponse({ error: { message: "too many" } }, 429), async () => {
-    const res = await handleProxyRequest(
-      proxyRequest("/opencode_anthropic/v1/messages", {
-        body: { model: "m", max_tokens: 8, messages: [] },
-      }),
-      makeOptions(),
-    );
-    assert.equal(res.status, 429);
-    assert.equal((await res.json()).error.type, "rate_limit_error");
-  });
-});
-
-test("opencode_anthropic：成功响应转成 Anthropic 消息体", async () => {
-  await withUpstream(
-    jsonResponse({
-      id: "chatcmpl-9",
-      model: "glm-5",
-      choices: [
-        {
-          finish_reason: "tool_calls",
-          message: {
-            content: "working",
-            tool_calls: [
-              {
-                id: "call_1",
-                type: "function",
-                function: { name: "read_file", arguments: '{"path":"a.txt"}' },
-              },
-            ],
-          },
-        },
-      ],
-      usage: { prompt_tokens: 3, completion_tokens: 4 },
-    }),
-    async () => {
-      const res = await handleProxyRequest(
-        proxyRequest("/opencode_anthropic/v1/messages", {
-          body: { model: "m", max_tokens: 8, messages: [] },
-        }),
-        makeOptions(),
-      );
-      assert.equal(res.status, 200);
-      const data = await res.json();
-      assert.equal(data.type, "message");
-      assert.equal(data.stop_reason, "tool_use");
-      assert.deepEqual(data.content[0], { type: "text", text: "working" });
-      assert.deepEqual(data.content[1], {
-        type: "tool_use",
-        id: "call_1",
-        name: "read_file",
-        input: { path: "a.txt" },
-      });
-      assert.deepEqual(data.usage, { input_tokens: 3, output_tokens: 4 });
-    },
-  );
-});
-
-test("Anthropic → OpenAI：tool_result 必须排在文本 user 消息之前", async () => {
-  await withUpstream(jsonResponse({ ok: true }), async (calls) => {
-    await handleProxyRequest(
-      proxyRequest("/opencode_anthropic/v1/messages", {
-        body: {
-          model: "m",
-          max_tokens: 16,
-          messages: [
-            {
-              role: "assistant",
-              content: [
-                { type: "tool_use", id: "toolu_1", name: "f", input: { a: 1 } },
-              ],
-            },
-            {
-              role: "user",
-              content: [
-                { type: "text", text: "also note this" },
-                {
-                  type: "tool_result",
-                  tool_use_id: "toolu_1",
-                  content: [{ type: "text", text: "result-body" }],
-                },
-              ],
-            },
-          ],
-        },
-      }),
-      makeOptions(),
-    );
-
-    const sent = calls[0].json;
-    assert.equal(sent.messages[0].role, "assistant");
-    assert.equal(sent.messages[0].tool_calls[0].function.name, "f");
-    assert.deepEqual(sent.messages[1], {
-      role: "tool",
-      tool_call_id: "toolu_1",
-      content: "result-body",
-    });
-    assert.deepEqual(sent.messages[2], { role: "user", content: "also note this" });
-  });
-});
-
-test("Anthropic → OpenAI：tool_choice none、图片 url、system 与 stop 映射", async () => {
-  await withUpstream(jsonResponse({ ok: true }), async (calls) => {
-    await handleProxyRequest(
-      proxyRequest("/opencode_anthropic/v1/messages", {
-        body: {
-          model: "m",
-          max_tokens: 16,
-          system: "be brief",
-          stop_sequences: ["STOP"],
-          tool_choice: { type: "none" },
-          tools: [{ name: "f", description: "d", input_schema: { type: "object" } }],
-          messages: [
-            {
-              role: "user",
-              content: [
-                { type: "text", text: "look" },
-                { type: "image", source: { type: "url", url: "https://img/x.png" } },
-              ],
-            },
-          ],
-        },
-      }),
-      makeOptions(),
-    );
-
-    const sent = calls[0].json;
-    assert.deepEqual(sent.messages[0], { role: "system", content: "be brief" });
-    assert.deepEqual(sent.messages[1].content[0], { type: "text", text: "look" });
-    assert.deepEqual(sent.messages[1].content[1], {
-      type: "image_url",
-      image_url: { url: "https://img/x.png" },
-    });
-    assert.equal(sent.tool_choice, "none");
-    assert.deepEqual(sent.stop, ["STOP"]);
-    assert.deepEqual(sent.tools[0].function.parameters, { type: "object" });
-  });
-});
-
-test("opencode_anthropic：上游漏掉 finish_reason 时按 tool_calls 推断 tool_use", async () => {
-  await withUpstream(
-    jsonResponse({
-      id: "chatcmpl-10",
-      choices: [
-        {
-          message: {
-            content: null,
-            tool_calls: [
-              {
-                id: "call_2",
-                type: "function",
-                function: { name: "f", arguments: "{}" },
-              },
-            ],
-          },
-        },
-      ],
-    }),
-    async () => {
-      const res = await handleProxyRequest(
-        proxyRequest("/opencode_anthropic/v1/messages", {
-          body: { model: "m", max_tokens: 8, messages: [] },
-        }),
-        makeOptions(),
-      );
-      const data = await res.json();
-      assert.equal(data.stop_reason, "tool_use");
-      assert.equal(data.content[0].type, "tool_use");
-    },
-  );
-});
-
-test("opencode_anthropic：带尾斜杠的 /messages/ 也能转换路径", async () => {
-  await withUpstream(jsonResponse({ ok: true }), async (calls) => {
-    const res = await handleProxyRequest(
-      proxyRequest("/opencode_anthropic/v1/messages/", {
-        body: { model: "m", max_tokens: 8, messages: [] },
-      }),
-      makeOptions(),
-    );
-    assert.equal(res.status, 200);
-    assert.equal(calls[0].url, "https://opencode.ai/zen/go/v1/chat/completions");
-  });
-});
-
-// ──────────────────────────────────────────────
-// 流式转换
-// ──────────────────────────────────────────────
-
-function sseUpstream(text) {
-  return new Response(text, {
-    headers: { "content-type": "text/event-stream" },
-  });
-}
-
-test("流式转换：事件序列正确，并在 message_delta 补报 input_tokens", async () => {
-  const sse =
-    'data: {"id":"chatcmpl-1","model":"glm-5","choices":[{"delta":{"role":"assistant","content":"He"}}]}\n\n' +
-    'data: {"choices":[{"delta":{"content":"llo"}}]}\n\n' +
-    'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":3}}\n\n' +
-    "data: [DONE]\n\n";
-
-  await withUpstream(sseUpstream(sse), async () => {
-    const res = await handleProxyRequest(
-      proxyRequest("/opencode_anthropic/v1/messages", {
-        body: {
-          model: "m",
-          max_tokens: 16,
-          stream: true,
-          messages: [{ role: "user", content: "hi" }],
-        },
-      }),
-      makeOptions(),
-    );
-
-    assert.equal(res.status, 200);
-    assert.equal(res.headers.get("content-type"), "text/event-stream");
-
-    const out = await res.text();
-    assert.match(out, /event: message_start/);
-    assert.match(out, /"type":"text_delta","text":"He"/);
-    assert.match(out, /"type":"text_delta","text":"llo"/);
-    assert.match(out, /event: content_block_stop/);
-    assert.match(out, /"stop_reason":"end_turn"/);
-    assert.match(out, /"usage":\{"output_tokens":3,"input_tokens":11\}/);
-    assert.match(out, /event: message_stop/);
-    assert.ok(!out.includes("event: error"));
-  });
-});
-
-test("流式转换：工具调用生成带 input:{} 的 tool_use 块", async () => {
-  const sse =
-    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"f","arguments":"{\\"a\\":"}}]}}]}\n\n' +
-    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"1}"}}]},"finish_reason":"tool_calls"}]}\n\n' +
-    "data: [DONE]\n\n";
-
-  await withUpstream(sseUpstream(sse), async () => {
-    const res = await handleProxyRequest(
-      proxyRequest("/opencode_anthropic/v1/messages", {
-        body: { model: "m", max_tokens: 16, stream: true, messages: [] },
-      }),
-      makeOptions(),
-    );
-
-    const out = await res.text();
-    assert.match(out, /"type":"tool_use","id":"call_1","name":"f","input":\{\}/);
-    assert.match(out, /"partial_json":"\{\\"a\\":"/);
-    assert.match(out, /"stop_reason":"tool_use"/);
-  });
-});
-
-test("流式转换：工具调用但上游漏掉 finish_reason 时仍以 tool_use 结束", async () => {
-  const sse =
-    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"f","arguments":"{}"}}]}}]}\n\n' +
-    "data: [DONE]\n\n";
-
-  await withUpstream(sseUpstream(sse), async () => {
-    const res = await handleProxyRequest(
-      proxyRequest("/opencode_anthropic/v1/messages", {
-        body: { model: "m", max_tokens: 16, stream: true, messages: [] },
-      }),
-      makeOptions(),
-    );
-
-    const out = await res.text();
-    assert.match(out, /"type":"tool_use","id":"call_1","name":"f"/);
-    assert.match(out, /"stop_reason":"tool_use"/);
-  });
-});
-
-test("流式转换：上游中途出错时发出 error 事件而不是正常结束", async () => {
-  const encoder = new TextEncoder();
-  const body = new ReadableStream({
-    start(controller) {
-      controller.enqueue(
-        encoder.encode('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'),
-      );
-      controller.error(new Error("upstream reset"));
-    },
-  });
-
-  await withUpstream(new Response(body, { headers: { "content-type": "text/event-stream" } }), async () => {
-    const res = await handleProxyRequest(
-      proxyRequest("/opencode_anthropic/v1/messages", {
-        body: { model: "m", max_tokens: 16, stream: true, messages: [] },
-      }),
-      makeOptions(),
-    );
-
-    const out = await res.text();
-    assert.match(out, /event: error/);
-    assert.match(out, /"type":"api_error"/);
-    assert.match(out, /upstream reset/);
-    assert.ok(!out.includes("event: message_stop"));
-  });
-});
-
-test("流式转换：由 query 参数触发 SSE 时也能识别（不再整体缓冲）", async () => {
-  const sse =
-    'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n' + "data: [DONE]\n\n";
-
-  await withUpstream(sseUpstream(sse), async () => {
-    const res = await handleProxyRequest(
-      proxyRequest("/opencode_anthropic/v1/messages?stream=true", {
-        // 请求体里没有 stream 字段：只有上游 Content-Type 能表明这是 SSE
-        body: { model: "m", max_tokens: 16, messages: [] },
-      }),
-      makeOptions(),
-    );
-
-    assert.equal(res.headers.get("content-type"), "text/event-stream");
-    const out = await res.text();
-    assert.match(out, /event: message_stop/);
-  });
-});
-
-test("非 Anthropic provider 的 SSE 原样透传", async () => {
+test("SSE 原样透传", async () => {
   const sse =
     'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n' +
     'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n' +
@@ -1304,19 +975,370 @@ test("SSE 修复：仅作用于 Chat Completions，Responses 等其他 SSE 原�
   });
 });
 
-test("Anthropic 原生 SSE 不补 OpenAI 的 finish_reason / [DONE]", async () => {
-  const sse =
-    'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}\n\n';
+// ──────────────────────────────────────────────
+// Responses API 原生支持（与 Chat Completions 并存，不做协议转换）
+// ──────────────────────────────────────────────
 
-  await withUpstream(sseUpstream(sse), async () => {
-    const res = await handleProxyRequest(
-      proxyRequest("/deepseek_anthropic/v1/messages", {
-        body: { model: "m", max_tokens: 8, stream: true, messages: [] },
+test("Responses：非流式 POST 原样透传路径、请求体、响应与响应头", async () => {
+  const responseBody = {
+    id: "resp_1",
+    object: "response",
+    status: "completed",
+    output: [
+      {
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "hi" }],
+      },
+    ],
+    usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+  };
+
+  await withUpstream(
+    jsonResponse(responseBody, 200, { "x-request-id": "req_resp" }),
+    async (calls) => {
+      const res = await handleProxyRequest(
+        proxyRequest("/gpt/v1/responses?trace=1", {
+          body: { model: "gpt-5.1", input: "hi", store: false },
+        }),
+        makeOptions(),
+      );
+
+      assert.equal(calls[0].url, "https://api.openai.com/v1/responses?trace=1");
+      assert.equal(calls[0].method, "POST");
+      assert.equal(calls[0].headers.authorization, "Bearer test-key");
+      assert.deepEqual(calls[0].json, {
+        model: "gpt-5.1",
+        input: "hi",
+        store: false,
+      });
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get("x-request-id"), "req_resp");
+      assert.deepEqual(await res.json(), responseBody);
+    },
+  );
+});
+
+test("Responses：裸 /v1/responses 默认走 OpenAI（gpt）", async () => {
+  await withUpstream(
+    () => jsonResponse({ id: "resp_1", object: "response" }),
+    async (calls) => {
+      const res = await handleProxyRequest(
+        proxyRequest("/v1/responses", {
+          body: { model: "gpt-5.1", input: "hi" },
+        }),
+        makeOptions(),
+      );
+
+      assert.equal(res.status, 200);
+      assert.equal(calls[0].url, "https://api.openai.com/v1/responses");
+      assert.equal(calls[0].headers.authorization, "Bearer test-key");
+      assert.deepEqual(calls[0].json, { model: "gpt-5.1", input: "hi" });
+    },
+  );
+});
+
+test("Responses：裸 GET /v1/responses/{id} 默认走 OpenAI（gpt）", async () => {
+  await withUpstream(
+    () => jsonResponse({ id: "resp_1", object: "response" }),
+    async (calls) => {
+      const res = await handleProxyRequest(
+        new Request(`${PROXY_ORIGIN}/v1/responses/resp_1`, {
+          method: "GET",
+          headers: { authorization: "Bearer test-key" },
+        }),
+        makeOptions(),
+      );
+
+      assert.equal(res.status, 200);
+      assert.equal(calls[0].url, "https://api.openai.com/v1/responses/resp_1");
+    },
+  );
+});
+
+test("Chat Completions：裸 /v1/chat/completions 默认走 OpenAI（gpt）", async () => {
+  await withUpstream(
+    () => jsonResponse({ choices: [] }),
+    async (calls) => {
+      const res = await handleProxyRequest(
+        proxyRequest("/v1/chat/completions", {
+          body: { model: "gpt-5.1", messages: [] },
+        }),
+        makeOptions(),
+      );
+
+      assert.equal(res.status, 200);
+      assert.equal(calls[0].url, "https://api.openai.com/v1/chat/completions");
+      assert.equal(calls[0].headers.authorization, "Bearer test-key");
+    },
+  );
+});
+
+test("Responses：MiniMax / GLM / DeepSeek / 火山使用各自的 Responses 基址", async () => {
+  const matrix = [
+    ["/minimax/v1/responses", "https://api.minimax.cn/v1/responses"],
+    ["/glm/v1/responses", "https://open.bigmodel.cn/api/v1/responses"],
+    ["/deepseek/v1/responses", "https://api.deepseek.com/responses"],
+    [
+      "/volcengine/v1/responses",
+      "https://ark.cn-beijing.volces.com/api/coding/v3/responses",
+    ],
+  ];
+
+  for (const [path, expected] of matrix) {
+    await withUpstream(
+      jsonResponse({ id: "resp_1", object: "response" }),
+      async (calls) => {
+        const res = await handleProxyRequest(
+          proxyRequest(path, { body: { model: "m", input: "hi" } }),
+          makeOptions(),
+        );
+        assert.equal(res.status, 200, path);
+        assert.equal(calls[0].url, expected, path);
+      },
+    );
+  }
+});
+
+test("GLM：Responses 子路径（GET /responses/{id}/input_items）使用 Responses 基址", async () => {
+  await withUpstream(
+    () => jsonResponse({ data: [] }),
+    async (calls) => {
+      const res = await handleProxyRequest(
+        new Request(`${PROXY_ORIGIN}/glm/v1/responses/resp_1/input_items`, {
+          method: "GET",
+          headers: { authorization: "Bearer test-key" },
+        }),
+        makeOptions(),
+      );
+
+      assert.equal(res.status, 200);
+      assert.equal(
+        calls[0].url,
+        "https://open.bigmodel.cn/api/v1/responses/resp_1/input_items",
+      );
+    },
+  );
+});
+
+test("Responses：DELETE 返回 204 时无 body 透传", async () => {
+  await withUpstream(
+    () =>
+      new Response(null, {
+        status: 204,
+        headers: { "x-request-id": "req_del" },
+      }),
+    async (calls) => {
+      const res = await handleProxyRequest(
+        new Request(`${PROXY_ORIGIN}/glm/v1/responses/resp_1`, {
+          method: "DELETE",
+          headers: { authorization: "Bearer test-key" },
+        }),
+        makeOptions(),
+      );
+
+      assert.equal(res.status, 204);
+      assert.equal(await res.text(), "");
+      assert.equal(res.headers.get("x-request-id"), "req_del");
+      assert.equal(
+        calls[0].url,
+        "https://open.bigmodel.cn/api/v1/responses/resp_1",
+      );
+      assert.equal(calls[0].method, "DELETE");
+    },
+  );
+});
+
+test("Chat：MiniMax / GLM / DeepSeek / 火山仍使用各自的 Chat 基址", async () => {
+  const matrix = [
+    [
+      "/minimax/v1/chat/completions",
+      "https://api.minimaxi.com/v1/chat/completions",
+    ],
+    [
+      "/glm/v1/chat/completions",
+      "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+    ],
+    [
+      "/deepseek/v1/chat/completions",
+      "https://api.deepseek.com/v1/chat/completions",
+    ],
+    [
+      "/volcengine/v1/chat/completions",
+      "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions",
+    ],
+  ];
+
+  for (const [path, expected] of matrix) {
+    await withUpstream(
+      jsonResponse({ choices: [] }),
+      async (calls) => {
+        const res = await handleProxyRequest(
+          proxyRequest(path, { body: { model: "m", messages: [] } }),
+          makeOptions(),
+        );
+        assert.equal(res.status, 200, path);
+        assert.equal(calls[0].url, expected, path);
+      },
+    );
+  }
+});
+
+test("裸入口：Responses 用 gpt 的 Responses 基址，Chat 用 gpt 的 Chat 基址", async () => {
+  const gpt = {
+    apiBase: "https://chat.example/v1",
+    responsesApiBase: "https://responses.example/v1",
+  };
+
+  await withUpstream(
+    () => jsonResponse({ id: "resp_1", object: "response" }),
+    async (calls) => {
+      await handleProxyRequest(
+        proxyRequest("/v1/responses", {
+          body: { model: "m", input: "hi" },
+        }),
+        makeOptions({ gpt }),
+      );
+      assert.equal(calls[0].url, "https://responses.example/v1/responses");
+
+      await handleProxyRequest(
+        proxyRequest("/v1/chat/completions", {
+          body: { model: "m", messages: [] },
+        }),
+        makeOptions({ gpt }),
+      );
+      assert.equal(calls[1].url, "https://chat.example/v1/chat/completions");
+    },
+  );
+});
+
+test("缺少 provider 前缀：其它 /v1/* 直接返回 400，且不请求上游", async () => {
+  await withUpstream(jsonResponse({}), async (calls) => {
+    // /v1/models 是代理本地端点；/v1/responses 与 /v1/chat/completions 默认走 OpenAI。
+    // 其它需要转发上游的裸路径必须报错。
+    for (const path of ["/v1/embeddings", "/v1"]) {
+      const res = await handleProxyRequest(
+        proxyRequest(path, {
+          body: { model: "m", messages: [], input: "hi" },
+        }),
+        makeOptions(),
+      );
+      assert.equal(res.status, 400, path);
+      const data = await res.json();
+      assert.equal(data.error.type, "invalid_request_error", path);
+      assert.match(data.error.message, /Provider prefix is required/, path);
+      assert.match(data.error.message, /\/minimax/, path);
+    }
+    assert.equal(calls.length, 0);
+  });
+});
+
+test("Responses：GET /responses/{id} 与 DELETE 原样透传", async () => {
+  await withUpstream(
+    () => jsonResponse({ id: "resp_1", object: "response" }),
+    async (calls) => {
+      const get = await handleProxyRequest(
+        new Request(`${PROXY_ORIGIN}/gpt/v1/responses/resp_1`, {
+          method: "GET",
+          headers: { authorization: "Bearer test-key" },
+        }),
+        makeOptions(),
+      );
+      assert.equal(calls[0].url, "https://api.openai.com/v1/responses/resp_1");
+      assert.equal(calls[0].method, "GET");
+      assert.equal(calls[0].text, null);
+      assert.equal((await get.json()).object, "response");
+
+      const del = await handleProxyRequest(
+        new Request(`${PROXY_ORIGIN}/gpt/v1/responses/resp_1`, {
+          method: "DELETE",
+          headers: { authorization: "Bearer test-key" },
+        }),
+        makeOptions(),
+      );
+      assert.equal(calls[1].url, "https://api.openai.com/v1/responses/resp_1");
+      assert.equal(calls[1].method, "DELETE");
+      assert.equal(del.status, 200);
+    },
+  );
+});
+
+test("Responses：openai-beta / organization / project / idempotency-key 透传", async () => {
+  await withUpstream(() => jsonResponse({ id: "resp_1" }), async (calls) => {
+    await handleProxyRequest(
+      proxyRequest("/gpt/v1/responses", {
+        headers: {
+          "openai-beta": "responses=2025-03-11",
+          "openai-organization": "org_1",
+          "openai-project": "proj_1",
+          "idempotency-key": "idem_1",
+        },
+        body: { model: "gpt-5.1", input: "hi" },
       }),
       makeOptions(),
     );
 
-    assert.equal(await res.text(), sse);
+    assert.equal(calls[0].headers["openai-beta"], "responses=2025-03-11");
+    assert.equal(calls[0].headers["openai-organization"], "org_1");
+    assert.equal(calls[0].headers["openai-project"], "proj_1");
+    assert.equal(calls[0].headers["idempotency-key"], "idem_1");
+  });
+});
+
+test("Responses：SSE 事件原样透传，不注入 Chat 的 finish_reason / [DONE]", async () => {
+  const sse =
+    'event: response.created\ndata: {"type":"response.created","response":{"id":"resp_1","status":"in_progress"}}\n\n' +
+    'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"hi"}\n\n' +
+    'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_1","status":"completed"}}\n\n';
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/gpt/v1/responses", {
+        body: { model: "gpt-5.1", input: "hi", stream: true },
+      }),
+      makeOptions(),
+    );
+
+    assert.equal(res.headers.get("content-type"), "text/event-stream");
+    const text = await res.text();
+    assert.equal(text, sse);
+    assert.ok(!text.includes("finish_reason"));
+    assert.ok(!text.includes("data: [DONE]"));
+  });
+});
+
+test("Responses：流式请求上游返回 JSON 时原样返回，不合成 Chat SSE", async () => {
+  const responseBody = {
+    id: "resp_1",
+    object: "response",
+    status: "completed",
+    output: [],
+  };
+
+  await withUpstream(() => jsonResponse(responseBody), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/gpt/v1/responses", {
+        body: { model: "gpt-5.1", input: "hi", stream: true },
+      }),
+      makeOptions(),
+    );
+
+    assert.equal(res.headers.get("content-type"), "application/json");
+    assert.deepEqual(await res.json(), responseBody);
+  });
+});
+
+test("Chat Completions：同一 provider 基址仍然原样支持", async () => {
+  await withUpstream(() => jsonResponse({ choices: [] }), async (calls) => {
+    const res = await handleProxyRequest(
+      proxyRequest("/gpt/v1/chat/completions", {
+        body: { model: "gpt-5.1", messages: [] },
+      }),
+      makeOptions(),
+    );
+
+    assert.equal(calls[0].url, "https://api.openai.com/v1/chat/completions");
+    assert.equal(res.status, 200);
   });
 });
 
@@ -1331,10 +1353,9 @@ const OPENCODE_SESSION_RE = /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
 test("OpenCode Go：客户端没带会话头时自动派生格式合法的 x-opencode-session", async () => {
   await withUpstream(() => jsonResponse(OK_OPENAI), async (calls) => {
     const res = await handleProxyRequest(
-      proxyRequest("/opencode_anthropic/v1/messages", {
+      proxyRequest("/opencode/v1/chat/completions", {
         body: {
           model: "glm-5",
-          max_tokens: 8,
           messages: [{ role: "user", content: "你好" }],
         },
       }),
@@ -1364,8 +1385,8 @@ test("OpenCode Go：同一对话的后续轮次派生同一个会话 id，新对
   await withUpstream(() => jsonResponse(OK_OPENAI), async (calls) => {
     const first = (body) =>
       handleProxyRequest(
-        proxyRequest("/opencode_anthropic/v1/messages", {
-          body: { model: "glm-5", max_tokens: 8, ...body },
+        proxyRequest("/opencode/v1/chat/completions", {
+          body: { model: "glm-5", ...body },
         }),
         makeOptions(),
       );
@@ -1391,13 +1412,12 @@ test("OpenCode Go：同一对话的后续轮次派生同一个会话 id，新对
 test("OpenCode 网关会话头：合法值沿用，非法/空白值改为派生，非网关注入", async () => {
   const clientSession = "ses_ea8e062a1ffef1R1BHXWtidHvn";
   await withUpstream(() => jsonResponse(OK_OPENAI), async (calls) => {
-    const send = (headers, path = "/opencode_anthropic/v1/messages") =>
+    const send = (headers, path = "/opencode/v1/chat/completions") =>
       handleProxyRequest(
         proxyRequest(path, {
           headers,
           body: {
             model: "glm-5",
-            max_tokens: 8,
             messages: [{ role: "user", content: "你好" }],
           },
         }),
@@ -1409,7 +1429,7 @@ test("OpenCode 网关会话头：合法值沿用，非法/空白值改为派生�
     assert.equal(calls[0].headers["x-session-id"], clientSession);
     assert.equal(calls[0].headers["x-opencode-session"], clientSession);
 
-    // 非 OpenCode 格式的会话值（如 Claude Code 的 uuid）不能满足免费模型校验 → 派生
+    // 非 OpenCode 格式的会话值（其它客户端的 uuid）不能满足免费模型校验 → 派生
     await send({ "x-session-id": "01a0af13-c6df-73c6-8803-9e6d9c720da7" });
     assert.match(calls[1].headers["x-opencode-session"], OPENCODE_SESSION_RE);
 
@@ -1580,46 +1600,6 @@ test("正常流式响应不会被空闲超时打断", async () => {
       assert.match(text, /"content":"A"/);
       assert.match(text, /"content":"C"/);
       assert.match(text, /data: \[DONE\]/);
-    },
-  );
-});
-
-test("Anthropic 转换流：空闲超时会转成 event: error 事件", async () => {
-  const encoder = new TextEncoder();
-  const stalled = new ReadableStream({
-    start(controller) {
-      controller.enqueue(
-        encoder.encode('data: {"id":"1","model":"m","choices":[{"delta":{"content":"A"}}]}\n\n'),
-      );
-      // 之后不再发数据
-    },
-  });
-
-  await withUpstream(
-    new Response(stalled, { headers: { "content-type": "text/event-stream" } }),
-    async () => {
-      const res = await handleProxyRequest(
-        proxyRequest("/opencode_anthropic/v1/messages", {
-          body: { model: "m", max_tokens: 8, stream: true, messages: [{ role: "user", content: "hi" }] },
-        }),
-        { ...makeOptions(), streamIdleTimeoutMs: 30 },
-      );
-
-      // 流会以错误结束，但必须在结束前把 Anthropic 的 error 事件发给客户端
-      let out = "";
-      try {
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        for (;;) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          out += decoder.decode(value, { stream: true });
-        }
-      } catch (_) {
-        // 预期内的流错误
-      }
-      assert.match(out, /event: error/);
-      assert.match(out, /"type":"error"/);
     },
   );
 });

@@ -7,18 +7,22 @@ export const PROVIDERS = {
   minimax: {
     envVar: "MINIMAX_API_BASE",
     default: "https://api.minimaxi.com/v1",
-  },
-  minimax_anthropic: {
-    envVar: "MINIMAX_ANTHROPIC_API_BASE",
-    default: "https://api.minimaxi.com/anthropic/v1",
+    // Responses API 使用独立基址（官方文档：https://api.minimax.cn/v1/responses）
+    responsesEnvVar: "MINIMAX_RESPONSES_API_BASE",
+    responsesDefault: "https://api.minimax.cn/v1",
   },
   glm: {
     envVar: "GLM_API_BASE",
     default: "https://open.bigmodel.cn/api/paas/v4",
+    // Responses API 基址与对话补全不同（/api/v1/responses）
+    responsesEnvVar: "GLM_RESPONSES_API_BASE",
+    responsesDefault: "https://open.bigmodel.cn/api/v1",
   },
   glm_cp: {
     envVar: "GLM_CP_API_BASE",
     default: "https://open.bigmodel.cn/api/coding/paas/v4",
+    // 编程套餐的 Responses 端点如与 Chat 不同，可用该变量覆盖
+    responsesEnvVar: "GLM_CP_RESPONSES_API_BASE",
   },
   kim: {
     envVar: "KIMI_API_BASE",
@@ -27,16 +31,14 @@ export const PROVIDERS = {
   deepseek: {
     envVar: "DEEPSEEK_API_BASE",
     default: "https://api.deepseek.com/v1",
-  },
-  deepseek_anthropic: {
-    envVar: "DEEPSEEK_ANTHROPIC_API_BASE",
-    // 与 minimax_anthropic 保持一致：基址带上 /v1，客户端路径中的 /v1 会被剥掉，
-    // 最终请求 https://api.deepseek.com/anthropic/v1/messages
-    default: "https://api.deepseek.com/anthropic/v1",
+    // Responses API 是 https://api.deepseek.com/responses（无 /v1）
+    responsesEnvVar: "DEEPSEEK_RESPONSES_API_BASE",
+    responsesDefault: "https://api.deepseek.com",
   },
   gpt: {
     envVar: "GPT_API_BASE",
     default: "https://api.openai.com/v1",
+    // 裸 /v1/responses、/v1/chat/completions（不带 provider 前缀）的默认上游
   },
   xiaomi: {
     envVar: "XIAOMI_API_BASE",
@@ -54,10 +56,6 @@ export const PROVIDERS = {
     envVar: "OPENCODE_API_BASE",
     default: "https://opencode.ai/zen/go/v1",
   },
-  opencode_anthropic: {
-    envVar: "OPENCODE_ANTHROPIC_API_BASE",
-    default: "https://opencode.ai/zen/go/v1",
-  },
   siliconflow: {
     envVar: "SILICONFLOW_API_BASE",
     default: "https://api.siliconflow.cn/v1",
@@ -69,6 +67,9 @@ export const PROVIDERS = {
   volcengine: {
     envVar: "VOLCENGINE_API_BASE",
     default: "https://ark.cn-beijing.volces.com/api/coding/v3",
+    // 编程套餐的 OpenAI 兼容入口同时承载 Chat 与 Responses；
+    // 如需切到通用方舟 /api/v3，可用该变量单独覆盖 Responses 基址
+    responsesEnvVar: "VOLCENGINE_RESPONSES_API_BASE",
   },
   openrouter: {
     envVar: "OPENROUTER_API_BASE",

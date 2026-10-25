@@ -89,6 +89,123 @@ test("Workers: OPTIONS 预检返回 CORS 且不请求上游", async () => {
   });
 });
 
+test("Workers: Responses 使用厂商独立的 Responses 基址", async () => {
+  await withUpstream(() => jsonResponse({ id: "resp_1" }), async (calls) => {
+    const res = await worker.fetch(
+      new Request("https://proxy.example/glm/v1/responses", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer k",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ model: "glm-5.3", input: "hi" }),
+      }),
+      {},
+    );
+
+    assert.equal(res.status, 200);
+    assert.equal(calls[0].url, "https://open.bigmodel.cn/api/v1/responses");
+  });
+});
+
+test("Workers: *_RESPONSES_API_BASE 可覆盖 Responses 基址", async () => {
+  const env = { GLM_RESPONSES_API_BASE: "https://glm-gateway.example/api/v1" };
+
+  await withUpstream(() => jsonResponse({ id: "resp_1" }), async (calls) => {
+    await worker.fetch(
+      new Request("https://proxy.example/glm/v1/responses", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer k",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ model: "glm-5.3", input: "hi" }),
+      }),
+      env,
+    );
+
+    assert.equal(
+      calls[0].url,
+      "https://glm-gateway.example/api/v1/responses",
+    );
+  });
+});
+
+test("Workers: 只覆盖 Chat 基址时，Responses 复用同一个自定义网关", async () => {
+  const env = { GLM_API_BASE: "https://glm-chat.example/api/paas/v4" };
+
+  await withUpstream(() => jsonResponse({ id: "resp_1" }), async (calls) => {
+    await worker.fetch(
+      new Request("https://proxy.example/glm/v1/responses", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer k",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ model: "glm-5.3", input: "hi" }),
+      }),
+      env,
+    );
+
+    assert.equal(
+      calls[0].url,
+      "https://glm-chat.example/api/paas/v4/responses",
+    );
+  });
+});
+
+test("Workers: 把 Chat 基址显式设为默认值时，Responses 仍使用同一个编程套餐基址", async () => {
+  const env = {
+    VOLCENGINE_API_BASE: "https://ark.cn-beijing.volces.com/api/coding/v3",
+  };
+
+  await withUpstream(() => jsonResponse({ id: "resp_1" }), async (calls) => {
+    await worker.fetch(
+      new Request("https://proxy.example/volcengine/v1/responses", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer k",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "doubao-seed-2-1-pro-260915",
+          input: "hi",
+        }),
+      }),
+      env,
+    );
+
+    assert.equal(
+      calls[0].url,
+      "https://ark.cn-beijing.volces.com/api/coding/v3/responses",
+    );
+  });
+});
+
+test("Workers: 自定义 Provider 可单独配置 Responses 基址", async () => {
+  const env = {
+    CUSTOM_PROVIDER_1_NAME: "mole",
+    CUSTOM_PROVIDER_1_API_BASE: "https://api.mole.ai/v1",
+    CUSTOM_PROVIDER_1_RESPONSES_API_BASE: "https://api.mole.ai/responses-api",
+  };
+
+  await withUpstream(() => jsonResponse({ id: "resp_1" }), async (calls) => {
+    await worker.fetch(
+      new Request("https://proxy.example/mole/v1/responses", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer k",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ model: "m", input: "hi" }),
+      }),
+      env,
+    );
+
+    assert.equal(calls[0].url, "https://api.mole.ai/responses-api/responses");
+  });
+});
+
 test("Workers: SSE 响应原样透传，且保留上游响应头", async () => {
   const sse =
     'data: {"choices":[{"index":0,"delta":{"content":"hi"}}]}\n\n' +

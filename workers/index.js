@@ -14,7 +14,11 @@ function loadCustomProviders(env) {
     if (!name || !apiBase) break;
     const key = String(name).toLowerCase();
     if (CUSTOM_PROVIDER_NAME_RE.test(key)) {
-      providers[key] = { apiBase };
+      providers[key] = {
+        apiBase,
+        responsesApiBase:
+          env[`CUSTOM_PROVIDER_${i}_RESPONSES_API_BASE`] || apiBase,
+      };
     }
     i++;
   }
@@ -26,10 +30,16 @@ function buildOptions(env) {
   return {
     providers: {
       ...Object.fromEntries(
-        Object.entries(PROVIDERS).map(([name, cfg]) => [
-          name,
-          { apiBase: env[cfg.envVar] || cfg.default },
-        ]),
+        Object.entries(PROVIDERS).map(([name, cfg]) => {
+          const apiBase = env[cfg.envVar] || cfg.default;
+          // 优先显式 Responses 基址；若只覆盖了 Chat 基址，则默认复用同一个
+          // 网关（避免把自定义网关的 Responses 请求发回官方地址）。
+          const responsesApiBase =
+            (cfg.responsesEnvVar && env[cfg.responsesEnvVar]) ||
+            (apiBase !== cfg.default ? apiBase : cfg.responsesDefault) ||
+            apiBase;
+          return [name, { apiBase, responsesApiBase }];
+        }),
       ),
       ...loadCustomProviders(env),
     },
@@ -46,7 +56,7 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
   "Access-Control-Allow-Headers":
-    "Content-Type, Authorization, x-api-key, anthropic-version, anthropic-beta, anthropic-dangerous-direct-browser-access, x-opencode-session, x-opencode-session-id, x-opencode-parent-session-id, x-opencode-client, x-opencode-project, x-opencode-request, x-session-id, x-session-affinity, x-parent-session-id, x-proxy-token, HTTP-Referer, X-Title",
+    "Content-Type, Authorization, x-api-key, openai-beta, openai-organization, openai-project, idempotency-key, x-opencode-session, x-opencode-session-id, x-opencode-parent-session-id, x-opencode-client, x-opencode-project, x-opencode-request, x-session-id, x-session-affinity, x-parent-session-id, x-proxy-token, HTTP-Referer, X-Title",
   "Access-Control-Expose-Headers":
     "x-request-id, retry-after, x-ratelimit-limit, x-ratelimit-remaining, x-ratelimit-reset",
 };
