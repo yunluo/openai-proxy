@@ -2,6 +2,13 @@ name = "maxapi"
 main = "workers/index.js"
 compatibility_date = "2024-01-01"
 
+# 自定义域名（Workers Custom Domain）：部署时自动在 gitcafe.ink zone 里
+# 创建代理 DNS 记录并绑定到本 Worker。workers.dev 默认域名在国内被 DNS
+# 污染，客户端统一走该域名。
+routes = [
+  { pattern = "max.gitcafe.ink", custom_domain = true },
+]
+
 [vars]
 # API Key 由客户端通过 Authorization / x-api-key 传入，无需在此配置密钥
 #
