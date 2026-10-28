@@ -28,6 +28,8 @@ head_sampling_rate = 1
 invocation_logs = true
 
 [placement]
-# 四种 placement 选项互斥；本代理要访问多个上游（minimax / opencode / openrouter…），
-# 用 smart 让 Cloudflare 自动挑选离上游最近的位置，不再写 region
-mode = "smart"
+# 固定执行位置（Placement Hint，与 smart 互斥）：指定 AWS 香港区域 ap-east-1，
+# Cloudflare 会把 Worker 固定放在到该区域延迟最低的自建数据中心（香港）。
+# 香港/华东（江苏）电信直连路由最优（约 35-45ms），且各上游（智谱/MiniMax/
+# DeepSeek/火山/OpenAI）从香港出口访问均可达。
+region = "aws:ap-east-1"
