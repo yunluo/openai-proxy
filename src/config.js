@@ -6,8 +6,9 @@ const API_BASE_WWW = "https://www.minimaxi.com";
 export const PROVIDERS = {
   minimax: {
     envVar: "MINIMAX_API_BASE",
-    default: "https://api.minimaxi.com/v1",
-    // Responses API 使用独立基址（官方文档：https://api.minimax.cn/v1/responses）
+    // 官方文档（platform.minimax.cn）Chat 与 Responses 现统一在 api.minimax.cn；
+    // 旧域名 api.minimaxi.com/v1 仍可用，可用 MINIMAX_API_BASE 覆盖
+    default: "https://api.minimax.cn/v1",
     responsesEnvVar: "MINIMAX_RESPONSES_API_BASE",
     responsesDefault: "https://api.minimax.cn/v1",
   },
