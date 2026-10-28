@@ -369,6 +369,9 @@ function buildChatSSEFromCompletion(data, fallbackModel) {
         }
         if (typeof message.content === "string" && message.content) {
           delta.content = message.content;
+        } else if (Array.isArray(message.content) && message.content.length > 0) {
+          // content part 数组（如带图片的多模态完成体）原样保留，不能静默丢弃
+          delta.content = message.content;
         }
         if (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
           delta.tool_calls = message.tool_calls.map((tool, position) => ({

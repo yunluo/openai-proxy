@@ -752,6 +752,42 @@ test("SSE 修复：请求 stream 但上游返回 JSON 完成体时补成 SSE", a
   );
 });
 
+test("SSE 修复：JSON 完成体的 content part 数组原样保留，不丢弃", async () => {
+  const parts = [
+    { type: "text", text: "图片内容如下" },
+    { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
+  ];
+  await withUpstream(
+    jsonResponse({
+      id: "cmpl-json-parts",
+      object: "chat.completion",
+      created: 123,
+      model: "m",
+      choices: [
+        {
+          index: 0,
+          message: { role: "assistant", content: parts },
+          finish_reason: "stop",
+        },
+      ],
+    }),
+    async () => {
+      const res = await handleProxyRequest(
+        proxyRequest("/opencode/v1/chat/completions", {
+          body: { model: "m", stream: true, messages: [] },
+        }),
+        makeOptions(),
+      );
+
+      assert.equal(res.status, 200);
+      const out = await res.text();
+      assert.match(out, /"content":\[\{"type":"text"/);
+      assert.match(out, /image_url/);
+      assert.ok(out.endsWith("data: [DONE]\n\n"));
+    },
+  );
+});
+
 test("SSE 修复：请求 stream 但上游返回 200 JSON 错误时转成 SSE error", async () => {
   await withUpstream(
     jsonResponse({ error: { message: "quota exceeded" } }),
