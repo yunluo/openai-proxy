@@ -72,6 +72,10 @@ function copyResponseHeaders(response, contentType) {
   headers.delete("content-length");
   headers.delete("content-encoding");
   headers.delete("transfer-encoding");
+  headers.delete("connection");
+  // 上游的 Set-Cookie 对 API 客户端没有意义，且会把厂商域的 cookie 带到客户端
+  // （例如 OpenAI 的 __cf_bm），造成 cookie 域混淆；代理不转发。
+  headers.delete("set-cookie");
   if (contentType) headers.set("Content-Type", contentType);
   return headers;
 }
@@ -149,16 +153,42 @@ function deriveOpenCodeSessionId(seed) {
 function firstUserMessageText(payload) {
   const messages = Array.isArray(payload?.messages) ? payload.messages : [];
   const first = messages.find((m) => m && m.role === "user");
-  if (!first) return "";
-  const { content } = first;
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content
-      .filter(
-        (part) => part && part.type === "text" && typeof part.text === "string",
-      )
-      .map((part) => part.text)
-      .join("\n");
+  if (first) {
+    const { content } = first;
+    if (typeof content === "string") return content;
+    if (Array.isArray(content)) {
+      return content
+        .filter(
+          (part) =>
+            part && part.type === "text" && typeof part.text === "string",
+        )
+        .map((part) => part.text)
+        .join("\n");
+    }
+    return "";
+  }
+
+  // Responses API：input 可以是字符串，也可以是带 role/content 的 input item 数组
+  const input = payload?.input;
+  if (typeof input === "string") return input;
+  if (Array.isArray(input)) {
+    for (const item of input) {
+      if (!item) continue;
+      if (typeof item === "string") return item;
+      if (item.role !== "user") continue;
+      if (typeof item.content === "string") return item.content;
+      if (Array.isArray(item.content)) {
+        return item.content
+          .filter(
+            (part) =>
+              part &&
+              part.type === "input_text" &&
+              typeof part.text === "string",
+          )
+          .map((part) => part.text)
+          .join("\n");
+      }
+    }
   }
   return "";
 }
@@ -891,9 +921,10 @@ export async function handleProxyRequest(request, options = {}) {
   }
 
   const contentType = response.headers.get("content-type");
+  const lowerContentType = (contentType || "").toLowerCase();
   // 以上游返回的 Content-Type 为准：只看请求体的 stream 字段会漏掉由 query 参数
   // 或 Accept 头触发的 SSE（那样会被错误地整体缓冲）
-  const isSSE = !!response.body && !!contentType?.includes("text/event-stream");
+  const isSSE = !!response.body && lowerContentType.includes("text/event-stream");
 
   // Responses API 与 Chat Completions 都是原生协议：Responses 的 SSE 逐事件原样
   // 透传，只有 Chat Completions 才做终止块修复。
@@ -936,9 +967,53 @@ export async function handleProxyRequest(request, options = {}) {
     });
   }
 
+  // DELETE /responses/{id} 等端点可能返回 204/205/304；这些状态不允许 body
+  if (
+    response.status === 204 ||
+    response.status === 205 ||
+    response.status === 304
+  ) {
+    return new Response(null, {
+      status: response.status,
+      headers: copyResponseHeaders(response, null),
+    });
+  }
+
   // ──── JSON 响应处理 ────
-  if (contentType && contentType.includes("application/json")) {
-    const data = JSON.parse(await readUpstreamText(response.body, idleTimeoutMs));
+  if (lowerContentType.includes("application/json")) {
+    const rawText = await readUpstreamText(response.body, idleTimeoutMs);
+    let data;
+    try {
+      data = JSON.parse(rawText);
+    } catch (_) {
+      // 上游声明 JSON 但 body 不是合法 JSON（空 body、截断、HTML 错误页等）。
+      // 流式 Chat 请求仍返回 SSE 错误流；其它情况原样透传，保留上游状态码，
+      // 避免把上游的 4xx/5xx 变成代理自己的 500。
+      if (wantsChatStream && response.ok) {
+        const snippet = rawText.trim().slice(0, 500);
+        return new Response(
+          buildChatSSEError(
+            `Upstream returned invalid JSON (${contentType || "unknown content type"})` +
+              (snippet ? `: ${snippet}` : " with an empty body."),
+            "upstream_unexpected_response",
+          ),
+          {
+            status: 200,
+            headers: {
+              "Content-Type": "text/event-stream",
+              "Cache-Control": "no-cache",
+            },
+          },
+        );
+      }
+      return new Response(rawText, {
+        status: response.status,
+        headers: copyResponseHeaders(
+          response,
+          contentType || "application/json",
+        ),
+      });
+    }
 
     // 客户端请求了 stream:true，上游却返回 JSON：包成 SSE 终止流，避免客户端
     // 因「零个事件」而报 stream ended without finish_reason。错误响应保留原
@@ -957,7 +1032,7 @@ export async function handleProxyRequest(request, options = {}) {
     }
 
     // DeepSeek 特殊处理：补全缺失的 reasoning_content 字段
-    if (resolved.provider === "deepseek" && data.choices?.[0]?.message) {
+    if (resolved.provider === "deepseek" && data?.choices?.[0]?.message) {
       const msg = data.choices[0].message;
       if (!("reasoning_content" in msg)) {
         Object.defineProperty(msg, "reasoning_content", {
@@ -973,18 +1048,6 @@ export async function handleProxyRequest(request, options = {}) {
     return new Response(JSON.stringify(data), {
       status: response.status,
       headers: copyResponseHeaders(response, "application/json"),
-    });
-  }
-
-  // DELETE /responses/{id} 等端点可能返回 204/205/304；这些状态不允许 body
-  if (
-    response.status === 204 ||
-    response.status === 205 ||
-    response.status === 304
-  ) {
-    return new Response(null, {
-      status: response.status,
-      headers: copyResponseHeaders(response, null),
     });
   }
 

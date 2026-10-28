@@ -21,8 +21,9 @@ export const PROVIDERS = {
   glm_cp: {
     envVar: "GLM_CP_API_BASE",
     default: "https://open.bigmodel.cn/api/coding/paas/v4",
-    // 编程套餐的 Responses 端点如与 Chat 不同，可用该变量覆盖
+    // 编程套餐的 Chat 走 coding/paas/v4，Responses 仍走标准 /api/v1
     responsesEnvVar: "GLM_CP_RESPONSES_API_BASE",
+    responsesDefault: "https://open.bigmodel.cn/api/v1",
   },
   kim: {
     envVar: "KIMI_API_BASE",

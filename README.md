@@ -49,6 +49,7 @@ Responses API 与 Chat Completions 的基址并不总是相同，代理会按请
 |------|-----------|----------------|----------|
 | MiniMax | `https://api.minimaxi.com/v1` | `https://api.minimax.cn/v1` | [创建 Response](https://platform.minimax.cn/docs/api-reference/responses-create) |
 | 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` | `https://open.bigmodel.cn/api/v1` | [创建 Response](https://docs.bigmodel.cn/api-reference/response/%E5%88%9B%E5%BB%BA-response) |
+| 智谱 GLM CP（编程） | `https://open.bigmodel.cn/api/coding/paas/v4` | `https://open.bigmodel.cn/api/v1` | [创建 Response](https://docs.bigmodel.cn/api-reference/response/%E5%88%9B%E5%BB%BA-response) |
 | DeepSeek | `https://api.deepseek.com/v1` | `https://api.deepseek.com` | [Responses API](https://api-docs.deepseek.com/zh-cn/guides/responses_api) |
 | 火山方舟 | `https://ark.cn-beijing.volces.com/api/coding/v3` | 同左（编程套餐） | [Responses API](https://console.volcengine.com/ark/region:cn-beijing/docs/responses-api-text-generation) |
 | OpenAI | `https://api.openai.com/v1` | 同左 | [Responses API](https://platform.openai.com/docs/api-reference/responses) |
@@ -58,6 +59,7 @@ Responses API 与 Chat Completions 的基址并不总是相同，代理会按请
 
 - `/minimax/v1/responses` → `https://api.minimax.cn/v1/responses`
 - `/glm/v1/responses` → `https://open.bigmodel.cn/api/v1/responses`
+- `/glm_cp/v1/responses` → `https://open.bigmodel.cn/api/v1/responses`
 - `/deepseek/v1/responses` → `https://api.deepseek.com/responses`
 - `/volcengine/v1/responses` → `https://ark.cn-beijing.volces.com/api/coding/v3/responses`
 - 对应的 `/chat/completions` 仍走各自的 Chat 基址
@@ -66,7 +68,7 @@ Responses API 与 Chat Completions 的基址并不总是相同，代理会按请
 
 > - MiniMax：Responses 文档站点是 `api.minimax.cn`，与本项目默认的 Chat 地址 `api.minimaxi.com` 不同；如果账号/密钥分属不同站点，请分别配置两个基址。
 > - 火山方舟：官方 Responses 文档示例使用通用 `/api/v3`；本项目默认按 OpenAI 兼容编程套餐入口 `https://ark.cn-beijing.volces.com/api/coding/v3`。`volcengine` 的 Chat 与 Responses 默认都走编程套餐；如果要切到通用方舟 `/api/v3`，把 `VOLCENGINE_API_BASE` 设为 `https://ark.cn-beijing.volces.com/api/v3`；只想让 Responses 走通用方舟时，改用 `VOLCENGINE_RESPONSES_API_BASE`。
-> - 智谱编程套餐：`glm_cp` 的 Responses 基址未硬编码，默认复用 `GLM_CP_API_BASE`；如编程套餐提供独立 Responses 端点，请设置 `GLM_CP_RESPONSES_API_BASE`。
+> - 智谱编程套餐：`glm_cp` 的 Responses 默认使用标准 Responses 基址 `https://open.bigmodel.cn/api/v1`（与 `glm` 相同），Chat 仍走 `https://open.bigmodel.cn/api/coding/paas/v4`；如编程套餐提供独立的 Responses 端点，可用 `GLM_CP_RESPONSES_API_BASE` 覆盖。
 > - 智谱 Responses 官方建议超时 7200 秒；代理默认等上游响应头 300 秒（`UPSTREAM_TIMEOUT_MS`），长任务请调大。流式思考阶段长时间无新事件时，`STREAM_IDLE_TIMEOUT_MS`（默认 120 秒）会中断，按需调大或设为 `0`。
 
 ### Responses 能力差异（以各厂商文档为准）
@@ -140,7 +142,7 @@ Responses API 与 Chat Completions 的基址并不总是相同，代理会按请
 | `GLM_API_BASE` | `https://open.bigmodel.cn/api/paas/v4` | 智谱 Chat API 地址 |
 | `GLM_RESPONSES_API_BASE` | `https://open.bigmodel.cn/api/v1` | 智谱 Responses API 地址 |
 | `GLM_CP_API_BASE` | `https://open.bigmodel.cn/api/coding/paas/v4` | 智谱编程 Chat API 地址 |
-| `GLM_CP_RESPONSES_API_BASE` | 未设置（复用 `GLM_CP_API_BASE`） | 智谱编程 Responses 基址覆盖 |
+| `GLM_CP_RESPONSES_API_BASE` | `https://open.bigmodel.cn/api/v1` | 智谱编程 Responses 基址（与 Chat 基址不同） |
 | `KIMI_API_BASE` | `https://api.moonshot.cn/v1` | Kimi API 地址 |
 | `DEEPSEEK_API_BASE` | `https://api.deepseek.com/v1` | DeepSeek Chat API 地址 |
 | `DEEPSEEK_RESPONSES_API_BASE` | `https://api.deepseek.com` | DeepSeek Responses API 地址 |
@@ -543,6 +545,37 @@ OpenAI SSE 缺失 `finish_reason` / `[DONE]` 时的终止块补齐（含 CRLF、
 - 上游 gzip 响应由运行时（Workers / undici）透明解压，因此转发时已剔除 `content-length` / `content-encoding`，避免客户端按错误的长度或编码解析
 - Cloudflare Workers 免费计划每天 100,000 请求、每次请求 10ms CPU（等待上游的 I/O 不计入 CPU）、同时等待响应头的连接上限 6；HTTP 触发的 Worker 没有总时长上限，流式响应可持续传输（实测 SSE 逐块转发，不会整体缓冲）。超大上下文（几百 KB JSON）的解析与重新序列化会吃 CPU，接近 10ms 时需付费计划并显式配置 `[limits] cpu_ms`（该配置仅付费计划支持）
 - **OpenCode Go** 端点在代理层完成 OpenAI Chat Completions 转发，客户端使用 OpenAI SDK 即可调用 OpenCode Go 的任意模型（DeepSeek V4 Pro、GLM-5、Kimi K2.6 等）
+
+## 故障排查
+
+### 客户端报 `Get "https://<域名>/...": Unauthorized`
+
+这是 **Go 客户端经过 HTTP(S) 代理时 CONNECT 被代理拒绝** 的错误，不是本代理返回的 401。
+
+Go 的 `net/http` 在通过代理建立 HTTPS 隧道时，如果代理对 `CONNECT <域名>:443` 返回非 200，会把响应的 reason phrase 直接作为错误返回；401 就变成 `Unauthorized`。典型日志：
+
+```
+provider request failed provider=deepseek endpoint=/models
+error="Get \"https://max.gitcafe.ink/deepseek/v1/models\": Unauthorized"
+```
+
+本代理不实现 CONNECT，Cloudflare 对 CONNECT 直接返回 `400 Bad Request`；本代理自己的 401 是 JSON（`API key is required...` 或 `Missing or invalid x-proxy-token header.`），不会是这种 transport error。
+
+排查：
+
+```powershell
+Get-ChildItem Env: | Where-Object Name -match 'PROXY'
+curl.exe --noproxy "*" -i https://max.gitcafe.ink/deepseek/v1/models -H "Authorization: Bearer <key>"
+```
+
+如果 `--noproxy "*"` 返回 200，说明是客户端代理的问题。处理方式：
+
+- 设置 `NO_PROXY=max.gitcafe.ink,localhost,127.0.0.1`（Windows 用户/系统环境变量，或 gomodel/OpenCode 的启动环境），重启客户端；
+- 或给 `HTTPS_PROXY` 补上代理认证：`http://user:pass@host:port`；
+- Docker 运行 gomodel 时，Docker Desktop 会把宿主代理注入容器，需要显式加 `-e NO_PROXY=max.gitcafe.ink`；
+- 检查 gomodel provider 的 `proxy_url` 是否指向了一个会返回 401 的代理。
+
+gomodel 的 `circuit breaker is open - provider ... temporarily unavailable` 是上述 transport 失败累积后打开的熔断器；代理修好后重启 gomodel（或等待冷却）即可恢复。
 
 ## 相关链接
 

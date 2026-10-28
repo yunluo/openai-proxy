@@ -21,6 +21,10 @@ function makeOptions(overrides = {}) {
         apiBase: "https://open.bigmodel.cn/api/paas/v4",
         responsesApiBase: "https://open.bigmodel.cn/api/v1",
       },
+      glm_cp: {
+        apiBase: "https://open.bigmodel.cn/api/coding/paas/v4",
+        responsesApiBase: "https://open.bigmodel.cn/api/v1",
+      },
       gpt: { apiBase: "https://api.openai.com/v1" },
       volcengine: {
         apiBase: "https://ark.cn-beijing.volces.com/api/coding/v3",
@@ -379,6 +383,24 @@ test("JSON 响应保留上游状态码与响应头", async () => {
       assert.equal(res.headers.get("retry-after"), "7");
       assert.equal(res.headers.get("x-request-id"), "req_1");
       assert.equal((await res.json()).error.message, "slow down");
+    },
+  );
+});
+
+test("不转发上游的 Set-Cookie 和 Connection 头", async () => {
+  await withUpstream(
+    jsonResponse({ ok: true }, 200, {
+      "set-cookie": "a=b; Domain=api.openai.com",
+      connection: "keep-alive",
+    }),
+    async () => {
+      const res = await handleProxyRequest(
+        proxyRequest("/deepseek/v1/chat/completions", { body: { model: "m" } }),
+        makeOptions(),
+      );
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get("set-cookie"), null);
+      assert.equal(res.headers.get("connection"), null);
     },
   );
 });
@@ -1078,6 +1100,7 @@ test("Responses：MiniMax / GLM / DeepSeek / 火山使用各自的 Responses 基
   const matrix = [
     ["/minimax/v1/responses", "https://api.minimax.cn/v1/responses"],
     ["/glm/v1/responses", "https://open.bigmodel.cn/api/v1/responses"],
+    ["/glm_cp/v1/responses", "https://open.bigmodel.cn/api/v1/responses"],
     ["/deepseek/v1/responses", "https://api.deepseek.com/responses"],
     [
       "/volcengine/v1/responses",
@@ -1149,6 +1172,94 @@ test("Responses：DELETE 返回 204 时无 body 透传", async () => {
   );
 });
 
+test("204 即使上游带 application/json 也不解析 body", async () => {
+  await withUpstream(
+    () =>
+      new Response(null, {
+        status: 204,
+        headers: { "content-type": "application/json" },
+      }),
+    async () => {
+      const res = await handleProxyRequest(
+        new Request(`${PROXY_ORIGIN}/glm/v1/responses/resp_1`, {
+          method: "DELETE",
+          headers: { authorization: "Bearer test-key" },
+        }),
+        makeOptions(),
+      );
+
+      assert.equal(res.status, 204);
+      assert.equal(await res.text(), "");
+    },
+  );
+});
+
+test("上游声明 JSON 但 body 为空时保留状态码，不返回代理 500", async () => {
+  await withUpstream(
+    () =>
+      new Response("", {
+        status: 401,
+        headers: { "content-type": "application/json" },
+      }),
+    async () => {
+      const res = await handleProxyRequest(
+        proxyRequest("/deepseek/v1/chat/completions", {
+          body: { model: "m", messages: [] },
+        }),
+        makeOptions(),
+      );
+
+      assert.equal(res.status, 401);
+      assert.equal(await res.text(), "");
+    },
+  );
+});
+
+test("上游返回 JSON null 时原样透传，不抛 500", async () => {
+  await withUpstream(
+    () =>
+      new Response("null", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    async () => {
+      const res = await handleProxyRequest(
+        proxyRequest("/deepseek/v1/chat/completions", {
+          body: { model: "m", messages: [] },
+        }),
+        makeOptions(),
+      );
+
+      assert.equal(res.status, 200);
+      assert.equal(await res.text(), "null");
+    },
+  );
+});
+
+test("流式 Chat 上游返回非法 JSON 时包装成 SSE error + [DONE]", async () => {
+  await withUpstream(
+    () =>
+      new Response("not-json", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    async () => {
+      const res = await handleProxyRequest(
+        proxyRequest("/deepseek/v1/chat/completions", {
+          body: { model: "m", messages: [], stream: true },
+        }),
+        makeOptions(),
+      );
+
+      assert.equal(res.status, 200);
+      assert.match(res.headers.get("content-type"), /text\/event-stream/);
+      const text = await res.text();
+      assert.match(text, /upstream_unexpected_response/);
+      assert.match(text, /\[DONE\]/);
+    },
+  );
+});
+
 test("Chat：MiniMax / GLM / DeepSeek / 火山仍使用各自的 Chat 基址", async () => {
   const matrix = [
     [
@@ -1158,6 +1269,10 @@ test("Chat：MiniMax / GLM / DeepSeek / 火山仍使用各自的 Chat 基址", a
     [
       "/glm/v1/chat/completions",
       "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+    ],
+    [
+      "/glm_cp/v1/chat/completions",
+      "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
     ],
     [
       "/deepseek/v1/chat/completions",
@@ -1402,6 +1517,27 @@ test("OpenCode Go：同一对话的后续轮次派生同一个会话 id，新对
     });
     // 另一个对话：首条 user 消息不同
     await first({ messages: [{ role: "user", content: "另一个问题" }] });
+
+    const id0 = calls[0].headers["x-opencode-session"];
+    assert.equal(calls[1].headers["x-opencode-session"], id0);
+    assert.notEqual(calls[2].headers["x-opencode-session"], id0);
+  });
+});
+
+test("OpenCode 网关：Responses 请求按 input 派生会话 id", async () => {
+  await withUpstream(() => jsonResponse(OK_OPENAI), async (calls) => {
+    const send = (input) =>
+      handleProxyRequest(
+        proxyRequest("/opencode/v1/responses", {
+          body: { model: "glm-5", input },
+        }),
+        makeOptions(),
+      );
+
+    await send("你好");
+    // 同一对话的第二轮仍带同一个 input 起点（或至少首条内容不变）
+    await send("你好");
+    await send("另一个问题");
 
     const id0 = calls[0].headers["x-opencode-session"];
     assert.equal(calls[1].headers["x-opencode-session"], id0);

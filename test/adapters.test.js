@@ -108,6 +108,63 @@ test("Workers: Responses 使用厂商独立的 Responses 基址", async () => {
   });
 });
 
+test("Workers: glm_cp Responses 默认使用标准 /api/v1，Chat 仍走编程套餐", async () => {
+  await withUpstream(() => jsonResponse({ id: "resp_1" }), async (calls) => {
+    await worker.fetch(
+      new Request("https://proxy.example/glm_cp/v1/responses", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer k",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ model: "glm-5.3", input: "hi" }),
+      }),
+      {},
+    );
+
+    assert.equal(calls[0].url, "https://open.bigmodel.cn/api/v1/responses");
+  });
+
+  await withUpstream(() => jsonResponse({ choices: [] }), async (calls) => {
+    await worker.fetch(
+      new Request("https://proxy.example/glm_cp/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer k",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ model: "glm-5.3", messages: [] }),
+      }),
+      {},
+    );
+
+    assert.equal(
+      calls[0].url,
+      "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
+    );
+  });
+});
+
+test("Workers: GLM_CP_RESPONSES_API_BASE 可覆盖编程套餐 Responses 基址", async () => {
+  const env = { GLM_CP_RESPONSES_API_BASE: "https://glm-cp.example/api/v1" };
+
+  await withUpstream(() => jsonResponse({ id: "resp_1" }), async (calls) => {
+    await worker.fetch(
+      new Request("https://proxy.example/glm_cp/v1/responses", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer k",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ model: "glm-5.3", input: "hi" }),
+      }),
+      env,
+    );
+
+    assert.equal(calls[0].url, "https://glm-cp.example/api/v1/responses");
+  });
+});
+
 test("Workers: *_RESPONSES_API_BASE 可覆盖 Responses 基址", async () => {
   const env = { GLM_RESPONSES_API_BASE: "https://glm-gateway.example/api/v1" };
 
