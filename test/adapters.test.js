@@ -293,3 +293,62 @@ test("Workers: SSE 响应原样透传，且保留上游响应头", async () => {
     },
   );
 });
+
+// AI 网关严禁缓存：所有出口响应（含上游响应、OPTIONS、SSE）都必须强制 no-store，
+// 且上游自带的可缓存 Cache-Control 必须被覆盖
+test("Workers: 响应强制禁缓存，覆盖上游可缓存的 Cache-Control", async () => {
+  await withUpstream(
+    () =>
+      jsonResponse({ ok: true }, 200, {
+        "cache-control": "public, max-age=3600",
+      }),
+    async () => {
+      const res = await worker.fetch(
+        new Request("https://proxy.example/glm/v1/chat/completions", {
+          method: "POST",
+          headers: { authorization: "Bearer k", "content-type": "application/json" },
+          body: JSON.stringify({ model: "m" }),
+        }),
+        {},
+      );
+      assert.equal(res.headers.get("cache-control"), "private, no-store");
+      assert.equal(res.headers.get("cdn-cache-control"), "no-store");
+      assert.equal(
+        res.headers.get("cloudflare-cdn-cache-control"),
+        "no-store",
+      );
+    },
+  );
+});
+
+test("Workers: SSE 流式响应也带禁缓存头", async () => {
+  const sse = 'data: {"choices":[{"index":0,"delta":{"content":"hi"}}]}\n\n';
+  await withUpstream(
+    () =>
+      new Response(sse, {
+        headers: { "content-type": "text/event-stream" },
+      }),
+    async () => {
+      const res = await worker.fetch(
+        new Request("https://proxy.example/deepseek/v1/chat/completions", {
+          method: "POST",
+          headers: { authorization: "Bearer k", "content-type": "application/json" },
+          body: JSON.stringify({ model: "m", stream: true }),
+        }),
+        {},
+      );
+      assert.equal(res.headers.get("cache-control"), "private, no-store");
+      assert.equal(res.headers.get("cdn-cache-control"), "no-store");
+    },
+  );
+});
+
+test("Workers: OPTIONS 预检同样带禁缓存头", async () => {
+  const res = await worker.fetch(
+    new Request("https://proxy.example/v1/models", { method: "OPTIONS" }),
+    {},
+  );
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("cache-control"), "private, no-store");
+  assert.equal(res.headers.get("cdn-cache-control"), "no-store");
+});

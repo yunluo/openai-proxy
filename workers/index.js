@@ -61,12 +61,26 @@ const CORS_HEADERS = {
     "x-request-id, retry-after, x-ratelimit-limit, x-ratelimit-remaining, x-ratelimit-reset",
 };
 
-// 安全地为 Response 添加 CORS 头
+// AI 网关严禁任何缓存：不同 key / 会话的同一 URL 响应互不可复用。
+// 三层指令全部 no-store——Cloudflare 边缘缓存优先级：
+// Cloudflare-CDN-Cache-Control > CDN-Cache-Control > Cache Rules > origin Cache-Control，
+// 两个 CDN 专用头可以压制误配置的 Cache Rules；no-store 同时覆盖浏览器/客户端缓存。
+const NO_CACHE_HEADERS = {
+  "Cache-Control": "private, no-store",
+  "CDN-Cache-Control": "no-store",
+  "Cloudflare-CDN-Cache-Control": "no-store",
+};
+
+// 安全地为 Response 添加 CORS 头与禁缓存头
 // 对于 fetch 返回的响应，headers 可能是只读的，需要重建 Response
 // 对于我们创建的响应，headers 可直接修改
 function withCORS(response) {
   const newHeaders = new Headers(response.headers);
   for (const [key, value] of Object.entries(CORS_HEADERS)) {
+    newHeaders.set(key, value);
+  }
+  // 无条件覆盖：上游若带了可缓存的 Cache-Control（如 public, max-age）也必须压掉
+  for (const [key, value] of Object.entries(NO_CACHE_HEADERS)) {
     newHeaders.set(key, value);
   }
   return new Response(response.body, {
@@ -82,7 +96,10 @@ export default {
   async fetch(request, env) {
     // OPTIONS 预检请求直接返回
     if (request.method === "OPTIONS") {
-      return new Response(null, { status: 200, headers: CORS_HEADERS });
+      return new Response(null, {
+        status: 200,
+        headers: { ...CORS_HEADERS, ...NO_CACHE_HEADERS },
+      });
     }
 
     const options = buildOptions(env);
