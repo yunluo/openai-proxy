@@ -27,6 +27,9 @@ enabled = true
 head_sampling_rate = 1
 invocation_logs = true
 
+[observability.traces]
+enabled = false
+
 [placement]
 # 固定执行位置（Placement Hint，与 smart 互斥）：指定 AWS 香港区域 ap-east-1，
 # Cloudflare 会把 Worker 固定放在到该区域延迟最低的自建数据中心（香港）。
