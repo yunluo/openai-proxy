@@ -116,10 +116,14 @@ function repairToolCallArguments(container, argStates) {
       continue;
     }
     const key = Number.isInteger(toolCall?.index) ? toolCall.index : i;
+    const id =
+      typeof toolCall?.id === "string" && toolCall.id ? toolCall.id : null;
     let state = argStates.get(key);
-    // 新 tool call（带 id）从字符串外的干净状态重新开始扫描
-    if (!state || typeof toolCall?.id === "string") {
-      state = { inString: false, escaped: false };
+    // 新 tool call（id 出现且与该分片上次记录的不同）从字符串外的干净状态
+    // 重新开始扫描。部分上游会在每个分块重复携带同一个 id，只凭「有 id」
+    // 就重置会丢掉跨块字符串状态，导致后续分片里的裸控制字符漏修。
+    if (!state || (id && id !== state.lastId)) {
+      state = { inString: false, escaped: false, lastId: id };
       argStates.set(key, state);
     }
     const fixed = sanitizeJsonFragment(fn.arguments, state);
@@ -131,25 +135,93 @@ function repairToolCallArguments(container, argStates) {
   return changed;
 }
 
-// 请求历史里的 assistant.tool_calls 参数是完整 JSON 文本，逐条修复即可
+// 流式分片修复：obj[field] 是参数 JSON 文本的一个分片，按 key 续扫，
+// argStates 保存跨块字符串状态（是否在字符串内 / 上个字符是否是反斜杠）
+function repairFragmentWithState(obj, field, key, argStates) {
+  if (!obj || typeof obj[field] !== "string" || obj[field] === "") return false;
+  let state = argStates.get(key);
+  if (!state) {
+    state = { inString: false, escaped: false };
+    argStates.set(key, state);
+  }
+  const fixed = sanitizeJsonFragment(obj[field], state);
+  if (fixed === obj[field]) return false;
+  obj[field] = fixed;
+  return true;
+}
+
+// 完整 JSON 文本修复：obj[field] 是完整参数文本，从字符串外的干净状态扫描
+function repairCompleteJsonTextField(obj, field) {
+  if (!obj || typeof obj[field] !== "string" || obj[field] === "") return false;
+  const fixed = sanitizeJsonFragment(obj[field], {
+    inString: false,
+    escaped: false,
+  });
+  if (fixed === obj[field]) return false;
+  obj[field] = fixed;
+  return true;
+}
+
+// Responses 的工具调用项：function_call / mcp_call 的 arguments 同样是
+// 「JSON 字符串里再套一层 JSON」，与 Chat 的 tool_calls 需要相同的内层转义。
+// custom_tool_call 的 input 是任意文本而非 JSON，不在此列。
+function repairResponsesItemArguments(item) {
+  if (!item || (item.type !== "function_call" && item.type !== "mcp_call")) {
+    return false;
+  }
+  return repairCompleteJsonTextField(item, "arguments");
+}
+
+// 请求历史里的 tool 参数是完整 JSON 文本：Chat 的 assistant.tool_calls、
+// 旧版 assistant.function_call，以及 Responses input[] 里的工具调用项，
+// 逐条从干净状态修复即可
 function repairRequestToolArguments(body) {
-  const messages = Array.isArray(body?.messages) ? body.messages : null;
-  if (!messages) return false;
   let changed = false;
-  for (const message of messages) {
-    if (!message || !Array.isArray(message.tool_calls)) continue;
-    if (repairToolCallArguments(message, new Map())) changed = true;
+  const messages = Array.isArray(body?.messages) ? body.messages : null;
+  if (messages) {
+    for (const message of messages) {
+      if (!message) continue;
+      if (repairToolCallArguments(message, new Map())) changed = true;
+      if (repairCompleteJsonTextField(message.function_call, "arguments")) {
+        changed = true;
+      }
+    }
+  }
+  const input = Array.isArray(body?.input) ? body.input : null;
+  if (input) {
+    for (const item of input) {
+      if (repairResponsesItemArguments(item)) changed = true;
+    }
   }
   return changed;
 }
 
-// 非流式完成响应里的 tool_calls 参数同样是完整 JSON 文本
+// 非流式完成响应：Chat 的 choices[].message/delta 与 Responses 的
+// output[]（GET /responses/{id}/input_items 则是 data[]）都会出现参数文本
 function repairCompletionToolArguments(data) {
   const choices = Array.isArray(data?.choices) ? data.choices : [];
   let changed = false;
   for (const choice of choices) {
     if (repairToolCallArguments(choice?.message, new Map())) changed = true;
     if (repairToolCallArguments(choice?.delta, new Map())) changed = true;
+    if (repairCompleteJsonTextField(choice?.message?.function_call, "arguments")) {
+      changed = true;
+    }
+    if (repairCompleteJsonTextField(choice?.delta?.function_call, "arguments")) {
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function repairResponsesToolArguments(data) {
+  let changed = false;
+  for (const field of ["output", "data"]) {
+    const items = Array.isArray(data?.[field]) ? data[field] : null;
+    if (!items) continue;
+    for (const item of items) {
+      if (repairResponsesItemArguments(item)) changed = true;
+    }
   }
   return changed;
 }
@@ -531,11 +603,17 @@ function buildChatSSEFromCompletion(data, fallbackModel) {
             index: Number.isInteger(tool?.index) ? tool.index : position,
           }));
         }
+        // 旧版 function_call 同样不能在 JSON→SSE 转换时被静默丢弃
+        if (message.function_call && typeof message.function_call === "object") {
+          delta.function_call = message.function_call;
+        }
         const finishReason = isValidFinishReason(choice?.finish_reason)
           ? choice.finish_reason
           : delta.tool_calls
             ? "tool_calls"
-            : "stop";
+            : delta.function_call
+              ? "function_call"
+              : "stop";
         frames.push(
           `data: ${JSON.stringify({
             id,
@@ -677,6 +755,26 @@ function normalizeOpenAIChatSSE(body, idleMs, fallbackModel) {
           if (repairToolCallArguments(choice?.message, toolArgStates)) {
             repaired = true;
           }
+          // 旧版 function_call：delta 分片按固定 key 续扫，完整 message 从
+          // 干净状态扫；一条响应至多一个 function_call
+          if (
+            repairFragmentWithState(
+              choice?.delta?.function_call,
+              "arguments",
+              "legacy_function_call",
+              toolArgStates,
+            )
+          ) {
+            repaired = true;
+          }
+          if (
+            repairCompleteJsonTextField(
+              choice?.message?.function_call,
+              "arguments",
+            )
+          ) {
+            repaired = true;
+          }
         }
         // 修复过就重新序列化这一行；否则保持原始字节透传
         if (repaired) {
@@ -785,9 +883,51 @@ function normalizeOpenAIChatSSE(body, idleMs, fallbackModel) {
   });
 }
 
+// Responses 流事件里的工具调用参数（同样可能在内层带裸控制字符）：
+// - function_call_arguments.delta 的 delta 是参数文本分片，按 item_id 跨块续扫
+// - function_call_arguments.done 的 arguments 是完整文本，从干净状态扫
+// - output_item.added/in_progress 的 item 可能带部分参数文本，与后续 delta 续接
+// - output_item.done 的 item 携带完整参数文本
+// 只匹配这些确定的事件形状；output_text.delta 等普通文本事件绝不能碰，
+// 否则正文里的控制字符会被当成 JSON 字符串内容错误转义。
+function repairResponsesStreamEvent(value, argStates) {
+  const type = typeof value?.type === "string" ? value.type : "";
+  if (type === "response.function_call_arguments.delta") {
+    return repairFragmentWithState(
+      value,
+      "delta",
+      `resp:${typeof value.item_id === "string" ? value.item_id : ""}`,
+      argStates,
+    );
+  }
+  if (type === "response.function_call_arguments.done") {
+    return repairCompleteJsonTextField(value, "arguments");
+  }
+  if (
+    type === "response.output_item.added" ||
+    type === "response.output_item.in_progress"
+  ) {
+    const item = value?.item;
+    if (!item || (item.type !== "function_call" && item.type !== "mcp_call")) {
+      return false;
+    }
+    return repairFragmentWithState(
+      item,
+      "arguments",
+      `resp:${typeof item.id === "string" ? item.id : ""}`,
+      argStates,
+    );
+  }
+  if (type === "response.output_item.done") {
+    return repairResponsesItemArguments(value?.item);
+  }
+  return false;
+}
+
 // 非 Chat 修复路径的 SSE（Responses、非 200 响应、其它协议）：
 // 默认逐字节透传，但 data 行 JSON 若因裸控制字符解析失败，则只重写该行。
-// 合法行（含 event: 行、空行、未知字段）保持原字节，透传语义不变。
+// 此外 Responses 事件里 function_call 参数的内层控制字符在此修复（外层解析
+// 通过、内层二次解析会失败的场景），其余合法行保持原字节，透传语义不变。
 function repairSseControlChars(body, idleMs) {
   const source = withIdleTimeout(body, idleMs);
   if (!source) return body;
@@ -796,6 +936,8 @@ function repairSseControlChars(body, idleMs) {
   let buffer = "";
   const reader = source.getReader();
   let clientCancelled = false;
+  // Responses 工具参数分片按 item_id 跨块续扫的状态
+  const toolArgStates = new Map();
 
   const handleLine = (controller, line, isFinal) => {
     const position = line.indexOf("data:");
@@ -805,8 +947,14 @@ function repairSseControlChars(body, idleMs) {
       payload = payload.trim();
       if (payload && payload !== "[DONE]") {
         const parsed = parseJsonLenient(payload);
-        if (parsed.ok && parsed.repaired !== undefined) {
-          line = replaceSseDataLine(line, JSON.stringify(parsed.value));
+        if (parsed.ok) {
+          let repaired = parsed.repaired !== undefined;
+          if (repairResponsesStreamEvent(parsed.value, toolArgStates)) {
+            repaired = true;
+          }
+          if (repaired) {
+            line = replaceSseDataLine(line, JSON.stringify(parsed.value));
+          }
         }
       }
     }
@@ -1247,6 +1395,7 @@ export async function handleProxyRequest(request, options = {}) {
     if (parsed.ok) {
       data = parsed.value;
       repairCompletionToolArguments(data);
+      repairResponsesToolArguments(data);
     } else {
       // 上游声明 JSON 但 body 不是合法 JSON（空 body、截断、HTML 错误页等）。
       // 流式 Chat 请求仍返回 SSE 错误流；其它情况原样透传，保留上游状态码，

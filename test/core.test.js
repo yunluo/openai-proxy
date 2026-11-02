@@ -1975,6 +1975,394 @@ test("非流式 JSON 响应：字符串和 tool_calls.arguments 内的控制字�
   });
 });
 
+test("SSE 修复：上游每个分块重复 tool_call.id 时跨块控制字符仍能修复", async () => {
+  // 部分厂商会在每个 tool_call 分块里重复携带 id；状态机不能因此反复重置，
+  // 否则落在后续分片字符串内部的裸控制字符会漏修
+  const first = {
+    choices: [
+      {
+        index: 0,
+        delta: {
+          tool_calls: [
+            {
+              index: 0,
+              id: "call_1",
+              type: "function",
+              function: { name: "task", arguments: '{"prompt":"Line 1' },
+            },
+          ],
+        },
+      },
+    ],
+  };
+  const second = {
+    choices: [
+      {
+        index: 0,
+        delta: {
+          tool_calls: [
+            {
+              index: 0,
+              id: "call_1",
+              type: "function",
+              function: { arguments: '\tLine 2"}' },
+            },
+          ],
+        },
+      },
+    ],
+  };
+  const sse =
+    `data: ${JSON.stringify(first)}\n\n` +
+    `data: ${JSON.stringify(second)}\n\n` +
+    "data: [DONE]\n\n";
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/deepseek/v1/chat/completions", {
+        body: { model: "m", stream: true, messages: [] },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.text();
+    const merged = out
+      .split("\n")
+      .filter((line) => line.includes('"arguments"'))
+      .map(
+        (line) =>
+          JSON.parse(line.slice(6)).choices[0].delta.tool_calls[0].function
+            .arguments,
+      )
+      .join("");
+    assert.deepEqual(JSON.parse(merged), { prompt: "Line 1\tLine 2" });
+  });
+});
+
+test("SSE 修复：旧版流式 delta.function_call 跨块控制字符也能修复", async () => {
+  const first = {
+    choices: [
+      {
+        index: 0,
+        delta: { function_call: { name: "task", arguments: '{"prompt":"Line 1' } },
+      },
+    ],
+  };
+  const second = {
+    choices: [
+      {
+        index: 0,
+        delta: { function_call: { arguments: '\tLine 2"}' } },
+      },
+    ],
+  };
+  const sse =
+    `data: ${JSON.stringify(first)}\n\n` +
+    `data: ${JSON.stringify(second)}\n\n` +
+    "data: [DONE]\n\n";
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/deepseek/v1/chat/completions", {
+        body: { model: "m", stream: true, messages: [] },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.text();
+    const merged = out
+      .split("\n")
+      .filter((line) => line.includes('"function_call"'))
+      .map(
+        (line) =>
+          JSON.parse(line.slice(6)).choices[0].delta.function_call.arguments,
+      )
+      .join("");
+    assert.deepEqual(JSON.parse(merged), { prompt: "Line 1\tLine 2" });
+  });
+});
+
+test("Responses SSE：function_call 的 item.arguments 内层控制字符会被修复", async () => {
+  const event = {
+    type: "response.output_item.done",
+    item: {
+      type: "function_call",
+      id: "fc_1",
+      call_id: "call_1",
+      name: "task",
+      arguments: '{"prompt":"Line 1\tLine 2"}',
+    },
+  };
+  const sse =
+    `event: response.output_item.done\ndata: ${JSON.stringify(event)}\n\n` +
+    "data: [DONE]\n\n";
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/gpt/v1/responses", {
+        body: { model: "gpt-5", stream: true, input: "hi" },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.text();
+    const line = out.split("\n").find((l) => l.includes('"function_call"'));
+    assert.ok(line, "function_call 事件应被转发");
+    const forwarded = JSON.parse(line.slice(6));
+    assert.deepEqual(JSON.parse(forwarded.item.arguments), {
+      prompt: "Line 1\tLine 2",
+    });
+  });
+});
+
+test("Responses SSE：跨块 function_call_arguments.delta 的内层控制字符也能修复", async () => {
+  const first = {
+    type: "response.function_call_arguments.delta",
+    item_id: "fc_1",
+    output_index: 0,
+    delta: '{"prompt":"Line 1',
+  };
+  const second = {
+    type: "response.function_call_arguments.delta",
+    item_id: "fc_1",
+    output_index: 0,
+    delta: '\tLine 2"}',
+  };
+  const sse =
+    `data: ${JSON.stringify(first)}\n\n` +
+    `data: ${JSON.stringify(second)}\n\n` +
+    "data: [DONE]\n\n";
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/gpt/v1/responses", {
+        body: { model: "gpt-5", stream: true, input: "hi" },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.text();
+    const merged = out
+      .split("\n")
+      .filter((line) => line.includes("function_call_arguments"))
+      .map((line) => JSON.parse(line.slice(6)).delta)
+      .join("");
+    assert.deepEqual(JSON.parse(merged), { prompt: "Line 1\tLine 2" });
+  });
+});
+
+test("Responses SSE：function_call_arguments.done 的 arguments 内层控制字符会被修复", async () => {
+  const event = {
+    type: "response.function_call_arguments.done",
+    item_id: "fc_1",
+    output_index: 0,
+    arguments: '{"prompt":"Line 1\tLine 2"}',
+  };
+  const sse =
+    `data: ${JSON.stringify(event)}\n\n` + "data: [DONE]\n\n";
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/gpt/v1/responses", {
+        body: { model: "gpt-5", stream: true, input: "hi" },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.text();
+    const line = out.split("\n").find((l) => l.includes('"arguments"'));
+    assert.ok(line, "done 事件应被转发");
+    const forwarded = JSON.parse(line.slice(6));
+    assert.deepEqual(JSON.parse(forwarded.arguments), {
+      prompt: "Line 1\tLine 2",
+    });
+  });
+});
+
+test("Responses SSE：output_text.delta 的正文不会被参数修复误改", async () => {
+  // 正文里的引号 + 制表符是合法内容，绝不能被当成内层 JSON 错误转义
+  const delta = '他说"你好"\t再见';
+  const event = { type: "response.output_text.delta", item_id: "msg_1", delta };
+  const sse = `data: ${JSON.stringify(event)}\n\n` + "data: [DONE]\n\n";
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/gpt/v1/responses", {
+        body: { model: "gpt-5", stream: true, input: "hi" },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.text();
+    const line = out.split("\n").find((l) => l.includes('"delta"'));
+    assert.ok(line, "output_text.delta 事件应被转发");
+    const forwarded = JSON.parse(line.slice(6));
+    assert.equal(forwarded.delta, delta);
+  });
+});
+
+test("Responses 非流式：output[] 里工具调用的 arguments 内层控制字符会被修复", async () => {
+  const body = {
+    id: "resp_1",
+    object: "response",
+    output: [
+      {
+        type: "function_call",
+        id: "fc_1",
+        call_id: "call_1",
+        name: "task",
+        arguments: '{"prompt":"Line 1\tLine 2"}',
+      },
+      {
+        type: "mcp_call",
+        id: "mcp_1",
+        name: "search",
+        arguments: '{"q":"a\tb"}',
+        output: "ok",
+      },
+    ],
+  };
+
+  await withUpstream(jsonResponse(body), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/gpt/v1/responses", {
+        body: { model: "gpt-5", input: "hi" },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.json();
+    assert.deepEqual(JSON.parse(out.output[0].arguments), {
+      prompt: "Line 1\tLine 2",
+    });
+    assert.deepEqual(JSON.parse(out.output[1].arguments), { q: "a\tb" });
+  });
+});
+
+test("Responses 请求体：input[] 里 function_call.arguments 会被修复后转发", async () => {
+  const body = {
+    model: "gpt-5",
+    input: [
+      {
+        type: "function_call",
+        id: "fc_1",
+        call_id: "call_1",
+        name: "task",
+        arguments: '{"prompt":"Line 1\tLine 2"}',
+      },
+      { type: "function_call_output", call_id: "call_1", output: "ok" },
+    ],
+  };
+
+  await withUpstream(jsonResponse({ object: "response" }), async (calls) => {
+    const res = await handleProxyRequest(
+      proxyRequest("/gpt/v1/responses", { body }),
+      makeOptions(),
+    );
+
+    assert.equal(res.status, 200);
+    const forwardedArgs = calls[0].json.input[0].arguments;
+    assert.deepEqual(JSON.parse(forwardedArgs), { prompt: "Line 1\tLine 2" });
+  });
+});
+
+test("请求体：旧版 assistant.function_call 的参数会被修复后转发", async () => {
+  const body = {
+    model: "m",
+    messages: [
+      {
+        role: "assistant",
+        function_call: {
+          name: "task",
+          arguments: '{"prompt":"Line 1\tLine 2"}',
+        },
+      },
+      { role: "user", content: "hi" },
+    ],
+  };
+
+  await withUpstream(jsonResponse({ choices: [] }), async (calls) => {
+    const res = await handleProxyRequest(
+      proxyRequest("/deepseek/v1/chat/completions", { body }),
+      makeOptions(),
+    );
+
+    assert.equal(res.status, 200);
+    const forwardedArgs = calls[0].json.messages[0].function_call.arguments;
+    assert.deepEqual(JSON.parse(forwardedArgs), { prompt: "Line 1\tLine 2" });
+  });
+});
+
+test("非流式 JSON 响应：旧版 function_call 参数也会被修复", async () => {
+  await withUpstream(
+    jsonResponse({
+      id: "x",
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: "assistant",
+            function_call: {
+              name: "task",
+              arguments: '{"prompt":"Line 1\tLine 2"}',
+            },
+          },
+          finish_reason: "function_call",
+        },
+      ],
+    }),
+    async () => {
+      const res = await handleProxyRequest(
+        proxyRequest("/deepseek/v1/chat/completions", {
+          body: { model: "m", stream: false, messages: [] },
+        }),
+        makeOptions(),
+      );
+
+      const out = await res.json();
+      assert.deepEqual(
+        JSON.parse(out.choices[0].message.function_call.arguments),
+        { prompt: "Line 1\tLine 2" },
+      );
+    },
+  );
+});
+
+test("SSE 修复：JSON 完成体的旧版 function_call 转 SSE 不丢失", async () => {
+  await withUpstream(
+    jsonResponse({
+      id: "cmpl-json",
+      object: "chat.completion",
+      created: 123,
+      model: "m",
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: "assistant",
+            function_call: { name: "task", arguments: '{"q":"a"}' },
+          },
+          finish_reason: null,
+        },
+      ],
+    }),
+    async () => {
+      const res = await handleProxyRequest(
+        proxyRequest("/opencode/v1/chat/completions", {
+          body: { model: "m", stream: true, messages: [] },
+        }),
+        makeOptions(),
+      );
+
+      assert.equal(res.status, 200);
+      const out = await res.text();
+      assert.match(out, /"function_call":\{"name":"task"/);
+      assert.match(out, /"finish_reason":"function_call"/);
+      assert.ok(out.endsWith("data: [DONE]\n\n"));
+    },
+  );
+});
+
 // ──────────────────────────────────────────────
 // 上游中途断流（stream ended before completion）
 // ──────────────────────────────────────────────
