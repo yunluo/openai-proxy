@@ -82,8 +82,9 @@ function jsonResponse(data, status = 200, headers = {}) {
   });
 }
 
-function sseUpstream(text) {
+function sseUpstream(text, status = 200) {
   return new Response(text, {
+    status,
     headers: { "content-type": "text/event-stream" },
   });
 }
@@ -2047,6 +2048,84 @@ test("SSE 修复：上游空闲超时也补 error 事件 + [DONE]", async () => 
     assert.match(text, /idle timeout|sent nothing for 1s mid-stream/);
     assert.match(text, /data: \[DONE\]/);
     assert.ok(!/"finish_reason":"stop"/.test(text));
+  });
+});
+
+// ──────────────────────────────────────────────
+// Responses 等透传 SSE 的裸控制字符修复
+// ──────────────────────────────────────────────
+
+test("Responses SSE：含裸控制字符的 data 行被修复，其余行逐字节透传", async () => {
+  const rawTab = String.fromCharCode(9);
+  // response.created 事件回显 tools 数组，描述里带裸制表符（非法 JSON）
+  const brokenLine =
+    'data: {"type":"response.created","response":{"id":"resp_1",' +
+    '"status":"in_progress","output":[],"tools":[{"name":"Agent",' +
+    `"type":"function","description":"Launch a new agent${rawTab}to handle tasks"}]}}`;
+  const goodLine = 'data: {"type":"response.output_text.delta","delta":"hi"}';
+  const sse =
+    `event: response.created\n${brokenLine}\n\n${goodLine}\n\ndata: [DONE]\n\n`;
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/deepseek/v1/responses", {
+        body: { model: "m", stream: true, input: "hi" },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.text();
+    // 修复后的行是合法 JSON，客户端二次解析不再报 Bad control character
+    const repairedLine = out
+      .split("\n")
+      .find((line) => line.includes('"response.created"'));
+    assert.ok(repairedLine, "response.created 行应被转发");
+    const parsed = JSON.parse(repairedLine.slice(6));
+    assert.equal(
+      parsed.response.tools[0].description,
+      `Launch a new agent${rawTab}to handle tasks`,
+    );
+    // 合法行与 event: 行保持原字节
+    assert.ok(out.includes(`event: response.created`));
+    assert.ok(out.includes(`${goodLine}\n`));
+    assert.ok(out.includes("data: [DONE]"));
+  });
+});
+
+test("Responses SSE：完全合法的流逐字节透传，不做任何改写", async () => {
+  const sse =
+    'event: response.created\n' +
+    'data: {"type":"response.created","response":{"id":"r1","output":[]}}\n\n' +
+    'data: {"type":"response.output_text.delta","delta":"hi"}\n\n' +
+    "data: [DONE]\n\n";
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/deepseek/v1/responses", {
+        body: { model: "m", stream: true, input: "hi" },
+      }),
+      makeOptions(),
+    );
+
+    assert.equal(await res.text(), sse);
+  });
+});
+
+test("非 200 的 SSE 响应：data 行裸控制字符同样被修复", async () => {
+  const rawTab = String.fromCharCode(9);
+  const sse = `data: {"error":{"message":"rate${rawTab}limited"}}\n\n`;
+
+  await withUpstream(sseUpstream(sse, 429), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/deepseek/v1/chat/completions", {
+        body: { model: "m", stream: true, messages: [] },
+      }),
+      makeOptions(),
+    );
+
+    assert.equal(res.status, 429);
+    const parsed = JSON.parse((await res.text()).trim().slice(6));
+    assert.equal(parsed.error.message, "rate\tlimited");
   });
 });
 

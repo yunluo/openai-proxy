@@ -785,6 +785,62 @@ function normalizeOpenAIChatSSE(body, idleMs, fallbackModel) {
   });
 }
 
+// 非 Chat 修复路径的 SSE（Responses、非 200 响应、其它协议）：
+// 默认逐字节透传，但 data 行 JSON 若因裸控制字符解析失败，则只重写该行。
+// 合法行（含 event: 行、空行、未知字段）保持原字节，透传语义不变。
+function repairSseControlChars(body, idleMs) {
+  const source = withIdleTimeout(body, idleMs);
+  if (!source) return body;
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let buffer = "";
+  const reader = source.getReader();
+  let clientCancelled = false;
+
+  const handleLine = (controller, line, isFinal) => {
+    const position = line.indexOf("data:");
+    if (position !== -1) {
+      let payload = line.slice(position + 5);
+      if (payload.endsWith("\r")) payload = payload.slice(0, -1);
+      payload = payload.trim();
+      if (payload && payload !== "[DONE]") {
+        const parsed = parseJsonLenient(payload);
+        if (parsed.ok && parsed.repaired !== undefined) {
+          line = replaceSseDataLine(line, JSON.stringify(parsed.value));
+        }
+      }
+    }
+    controller.enqueue(encoder.encode(isFinal ? `${line}\n\n` : `${line}\n`));
+  };
+
+  return new ReadableStream({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (clientCancelled) return;
+        if (done) {
+          buffer += decoder.decode();
+          if (buffer) handleLine(controller, buffer, true);
+          controller.close();
+          return;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) handleLine(controller, line, false);
+      } catch (error) {
+        // 透传路径不合成终止事件：流错误保持原有裸错误语义
+        if (clientCancelled) return;
+        controller.error(error);
+      }
+    },
+    cancel() {
+      clientCancelled = true;
+      return reader.cancel().catch(() => {});
+    },
+  });
+}
+
 // 是否为 MiniMax 官网套餐/额度接口路径（/token_plan/*、/coding_plan/*）
 // 这类路径必须保留前缀转发给 www.minimaxi.com，不能像 provider 那样剥掉首段
 function isMiniMaxPlanPath(path) {
@@ -1163,7 +1219,7 @@ export async function handleProxyRequest(request, options = {}) {
           idleTimeoutMs,
           requestBodyObj?.model,
         )
-      : withIdleTimeout(response.body, idleTimeoutMs);
+      : repairSseControlChars(response.body, idleTimeoutMs);
 
     return new Response(streamBody, {
       status: response.status,
