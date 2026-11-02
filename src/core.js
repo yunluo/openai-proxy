@@ -735,22 +735,48 @@ function normalizeOpenAIChatSSE(body, idleMs, fallbackModel) {
     if (isDone) sawDone = true;
   };
 
-  return source.pipeThrough(
-    new TransformStream({
-      transform(chunk, controller) {
-        buffer += decoder.decode(chunk, { stream: true });
+  // 用 pull 循环而不是 pipeThrough：pipeThrough 遇到上游错误（连接中断、空闲
+  // 超时）会把错误原样传给客户端，flush 不会执行，客户端只看到一条没有任何
+  // 终止事件的断流（表现为 "provider stream ended before completion"，
+  // reason=unknown）。pull 循环里错误也会走 finishTerminal，补出可识别的
+  // error 事件 + [DONE]。pull 只在消费者要数据时触发，背压语义不变。
+  const reader = source.getReader();
+
+  return new ReadableStream({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          // 上游正常结束但可能没发 [DONE]：flush 剩余缓冲并补终止事件
+          buffer += decoder.decode();
+          if (buffer) handleLine(controller, buffer, true);
+          finishTerminal(controller, false);
+          controller.close();
+          return;
+        }
+        buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
         for (const line of lines) handleLine(controller, line, false);
-      },
-      flush(controller) {
-        buffer += decoder.decode();
-        if (buffer) handleLine(controller, buffer, true);
-        // 上游连 [DONE] 都没发：补终止事件 + [DONE]，绝不让流静默结束
+      } catch (error) {
+        // 上游中途断流/空闲超时：同样补 error 事件 + [DONE]，并把真实原因
+        // 带给客户端，而不是让它猜「流为什么断了」
+        if (!upstreamErrorMessage) {
+          upstreamErrorMessage =
+            error?.message === "Upstream stream idle timeout"
+              ? `Upstream idle timeout: no data for ${Math.ceil(idleMs / 1000)}s; connection aborted.`
+              : `Upstream stream interrupted: ${
+                  errorMessageOf(error) || "unknown error"
+                }`;
+        }
         finishTerminal(controller, false);
-      },
-    }),
-  );
+        controller.close();
+      }
+    },
+    cancel() {
+      return reader.cancel().catch(() => {});
+    },
+  });
 }
 
 // 是否为 MiniMax 官网套餐/额度接口路径（/token_plan/*、/coding_plan/*）

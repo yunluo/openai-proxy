@@ -974,12 +974,16 @@ test("SSE 修复：边收边转发，不等待整条流结束", async () => {
 test("SSE 修复：上游流中途报错时不伪造正常结束", async () => {
   const encoder = new TextEncoder();
   const upstreamBody = new ReadableStream({
-    start(controller) {
-      controller.enqueue(
-        encoder.encode(
-          'data: {"choices":[{"index":0,"delta":{"content":"partial"}}]}\n\n',
-        ),
-      );
+    pull(controller) {
+      if (!this.sent) {
+        this.sent = true;
+        controller.enqueue(
+          encoder.encode(
+            'data: {"choices":[{"index":0,"delta":{"content":"partial"}}]}\n\n',
+          ),
+        );
+        return;
+      }
       controller.error(new Error("upstream reset"));
     },
   });
@@ -996,21 +1000,13 @@ test("SSE 修复：上游流中途报错时不伪造正常结束", async () => {
         makeOptions(),
       );
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let out = "";
-      let failure = null;
-      try {
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          out += decoder.decode(value, { stream: true });
-        }
-      } catch (error) {
-        failure = error;
-      }
-      assert.ok(failure instanceof Error);
-      assert.match(failure.message, /upstream reset/);
+      // 断流不再裸抛给客户端：读到的是完整终止的 SSE，
+      // error 事件带真实原因（upstream reset），并补 [DONE]
+      const out = await res.text();
+      assert.match(out, /"content":"partial"/);
+      assert.match(out, /upstream_stream_error/);
+      assert.match(out, /upstream reset/);
+      assert.match(out, /data: \[DONE\]/);
       assert.ok(!out.includes('"finish_reason"'));
     },
   );
@@ -1718,7 +1714,7 @@ test("上游迟迟不回响应头：超时后返回 504", async () => {
   }
 });
 
-test("流式空闲超时：上游中途不再发数据时，流以错误结束而不是永久挂住", async () => {
+test("流式空闲超时：上游中途不再发数据时，补 error 事件 + [DONE] 而不是永久挂住", async () => {
   const encoder = new TextEncoder();
   const stalled = new ReadableStream({
     start(controller) {
@@ -1738,7 +1734,14 @@ test("流式空闲超时：上游中途不再发数据时，流以错误结束�
         { ...makeOptions(), streamIdleTimeoutMs: 30 },
       );
 
-      await assert.rejects(res.text(), /idle timeout/);
+      // 客户端收到的是一条完整终止的 SSE：error 事件带真实原因 + [DONE]，
+      // 而不是一条裸断流（那只会让客户端报 stream ended before completion）
+      const text = await res.text();
+      assert.match(text, /"content":"A"/);
+      assert.match(text, /upstream_stream_error/);
+      assert.match(text, /idle timeout/);
+      assert.match(text, /data: \[DONE\]/);
+      assert.ok(!/"finish_reason":"stop"/.test(text));
       // 应该在空闲超时后很快结束，而不是一直等
       assert.ok(Date.now() - started < 3000);
     },
@@ -1970,3 +1973,80 @@ test("非流式 JSON 响应：字符串和 tool_calls.arguments 内的控制字�
     assert.deepEqual(JSON.parse(forwardedArgs), { prompt: "Line 1\tLine 2" });
   });
 });
+
+// ──────────────────────────────────────────────
+// 上游中途断流（stream ended before completion）
+// ──────────────────────────────────────────────
+
+test("SSE 修复：上游中途断流时补 error 事件 + [DONE]，不静默断流", async () => {
+  const broken = new Response(
+    new ReadableStream({
+      pull(controller) {
+        // 第一次读：交付一个内容块；第二次读：连接中断（模拟真实断流）
+        if (!this.sent) {
+          this.sent = true;
+          controller.enqueue(
+            new TextEncoder().encode(
+              'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',
+            ),
+          );
+          return;
+        }
+        controller.error(new Error("connection reset by peer"));
+      },
+    }),
+    { headers: { "content-type": "text/event-stream" } },
+  );
+
+  await withUpstream(broken, async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/deepseek/v1/chat/completions", {
+        body: { model: "m", stream: true, messages: [] },
+      }),
+      makeOptions(),
+    );
+
+    const text = await res.text();
+    // 已收到的内容块仍在
+    assert.match(text, /"content":"partial"/);
+    // 客户端能从终止事件里读到真实原因
+    assert.match(text, /upstream_stream_error/);
+    assert.match(text, /connection reset by peer/);
+    assert.match(text, /data: \[DONE\]/);
+    // 不能伪造成功终止
+    assert.ok(!/"finish_reason":"stop"/.test(text));
+  });
+});
+
+test("SSE 修复：上游空闲超时也补 error 事件 + [DONE]", async () => {
+  const stalled = new Response(
+    new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode(
+            'data: {"choices":[{"delta":{"content":"half"}}]}\n\n',
+          ),
+        );
+        // 既不 enqueue 也不 close，直到被空闲超时取消
+      },
+      cancel() {},
+    }),
+    { headers: { "content-type": "text/event-stream" } },
+  );
+
+  await withUpstream(stalled, async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/deepseek/v1/chat/completions", {
+        body: { model: "m", stream: true, messages: [] },
+      }),
+      { ...makeOptions(), streamIdleTimeoutMs: 50 },
+    );
+
+    const text = await res.text();
+    assert.match(text, /upstream_stream_error/);
+    assert.match(text, /idle timeout|sent nothing for 1s mid-stream/);
+    assert.match(text, /data: \[DONE\]/);
+    assert.ok(!/"finish_reason":"stop"/.test(text));
+  });
+});
+
