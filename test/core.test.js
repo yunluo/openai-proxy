@@ -1775,3 +1775,198 @@ test("正常流式响应不会被空闲超时打断", async () => {
     },
   );
 });
+
+// ──────────────────────────────────────────────
+// 裸控制字符修复（Bad control character in string literal in JSON）
+// ──────────────────────────────────────────────
+
+test("SSE 修复：字符串里的裸控制字符转义后再转发", async () => {
+  // 上游把原始制表符写进 JSON 字符串（非法 JSON）
+  const sse =
+    'data: {"choices":[{"delta":{"content":"Line 1\tLine 2"}}]}\n\n' +
+    'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n' +
+    "data: [DONE]\n\n";
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/deepseek/v1/chat/completions", {
+        body: { model: "m", stream: true, messages: [] },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.text();
+    const contentLine = out
+      .split("\n")
+      .find((line) => line.includes('"content"'));
+    assert.ok(contentLine, "内容块应被转发");
+    // 每一行都必须是合法 JSON，客户端不能再次报 Bad control character
+    const chunk = JSON.parse(contentLine.slice(6));
+    assert.equal(chunk.choices[0].delta.content, "Line 1\tLine 2");
+  });
+});
+
+test("SSE 修复：tool_calls.arguments 内层的裸控制字符会被转义", async () => {
+  const argsWithTab = '{"prompt":"Line 1\tLine 2"}';
+  const chunk = {
+    id: "chatcmpl-t",
+    model: "m",
+    choices: [
+      {
+        index: 0,
+        delta: {
+          tool_calls: [
+            {
+              index: 0,
+              id: "call_1",
+              type: "function",
+              function: { name: "task", arguments: argsWithTab },
+            },
+          ],
+        },
+      },
+    ],
+  };
+  const sse =
+    `data: ${JSON.stringify(chunk)}\n\n` +
+    'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n' +
+    "data: [DONE]\n\n";
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/deepseek/v1/chat/completions", {
+        body: { model: "m", stream: true, messages: [] },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.text();
+    const toolLine = out
+      .split("\n")
+      .find((line) => line.includes('"tool_calls"'));
+    assert.ok(toolLine, "tool_calls 块应被转发");
+    const forwarded = JSON.parse(toolLine.slice(6));
+    const forwardedArgs =
+      forwarded.choices[0].delta.tool_calls[0].function.arguments;
+    // 客户端对 arguments 做二次解析时不能再报错
+    assert.deepEqual(JSON.parse(forwardedArgs), { prompt: "Line 1\tLine 2" });
+  });
+});
+
+test("SSE 修复：跨块到达的 tool_calls.arguments 控制字符也能修复", async () => {
+  const first = {
+    choices: [
+      {
+        index: 0,
+        delta: {
+          tool_calls: [
+            {
+              index: 0,
+              id: "call_1",
+              type: "function",
+              function: { name: "task", arguments: '{"prompt":"Line 1' },
+            },
+          ],
+        },
+      },
+    ],
+  };
+  const second = {
+    choices: [
+      {
+        index: 0,
+        delta: {
+          tool_calls: [
+            { index: 0, function: { arguments: '\tLine 2"}' } },
+          ],
+        },
+      },
+    ],
+  };
+  const sse =
+    `data: ${JSON.stringify(first)}\n\n` +
+    `data: ${JSON.stringify(second)}\n\n` +
+    "data: [DONE]\n\n";
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/deepseek/v1/chat/completions", {
+        body: { model: "m", stream: true, messages: [] },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.text();
+    const merged = out
+      .split("\n")
+      .filter((line) => line.includes('"arguments"'))
+      .map(
+        (line) =>
+          JSON.parse(line.slice(6)).choices[0].delta.tool_calls[0].function
+            .arguments,
+      )
+      .join("");
+    assert.deepEqual(JSON.parse(merged), { prompt: "Line 1\tLine 2" });
+  });
+});
+
+test("请求体：历史 tool_calls.arguments 内的裸控制字符会被修复后转发", async () => {
+  const body = {
+    model: "m",
+    messages: [
+      {
+        role: "assistant",
+        tool_calls: [
+          {
+            id: "call_1",
+            type: "function",
+            function: {
+              name: "task",
+              arguments: '{"prompt":"Line 1\tLine 2"}',
+            },
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: "call_1", content: "ok" },
+    ],
+  };
+
+  await withUpstream(jsonResponse({ choices: [] }), async (calls) => {
+    const res = await handleProxyRequest(
+      proxyRequest("/deepseek/v1/chat/completions", { body }),
+      makeOptions(),
+    );
+
+    assert.equal(res.status, 200);
+    const forwardedArgs =
+      calls[0].json.messages[0].tool_calls[0].function.arguments;
+    assert.deepEqual(JSON.parse(forwardedArgs), { prompt: "Line 1\tLine 2" });
+  });
+});
+
+test("非流式 JSON 响应：字符串和 tool_calls.arguments 内的控制字符都会被修复", async () => {
+  const raw =
+    '{"id":"x","choices":[{"index":0,"message":{"role":"assistant",' +
+    '"content":"Line 1\tLine 2",' +
+    '"tool_calls":[{"id":"call_1","type":"function","function":' +
+    '{"name":"task","arguments":"{\\"prompt\\":\\"Line 1\tLine 2\\"}"}}]},' +
+    '"finish_reason":"tool_calls"}]}';
+  const upstream = new Response(raw, {
+    headers: { "content-type": "application/json" },
+  });
+
+  await withUpstream(upstream, async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/deepseek/v1/chat/completions", {
+        body: { model: "m", stream: false, messages: [] },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.json();
+    assert.equal(out.choices[0].message.content, "Line 1\tLine 2");
+    const forwardedArgs =
+      out.choices[0].message.tool_calls[0].function.arguments;
+    assert.deepEqual(JSON.parse(forwardedArgs), { prompt: "Line 1\tLine 2" });
+  });
+});

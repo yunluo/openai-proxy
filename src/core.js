@@ -10,6 +10,157 @@ function getHeader(headers, name) {
   return undefined;
 }
 
+// 把 JSON 字符串内部的裸控制字符（U+0000–U+001F）重新转义。
+// 有些模型/上游会产出「字符串里带原始制表符或换行」的 JSON，标准 JSON.parse
+// 会直接抛 "Bad control character in string literal in JSON at position N"。
+// 网关无法要求上游修正，只能在转发前修好；其余字节保持原样。
+function escapeJsonControlChar(code) {
+  switch (code) {
+    case 0x08:
+      return "\\b";
+    case 0x09:
+      return "\\t";
+    case 0x0a:
+      return "\\n";
+    case 0x0c:
+      return "\\f";
+    case 0x0d:
+      return "\\r";
+    default:
+      return `\\u${code.toString(16).padStart(4, "0")}`;
+  }
+}
+
+// 逐字符扫描并把字符串字面量内的裸控制字符转义。
+// state 保存「是否在字符串内 / 上一个字符是否是反斜杠」，供流式分块复用。
+function sanitizeJsonFragment(text, state) {
+  if (typeof text !== "string" || text === "") return text;
+  let { inString, escaped } = state;
+  let out = "";
+  let changed = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const code = text.charCodeAt(i);
+    if (!inString) {
+      out += ch;
+      if (ch === '"') inString = true;
+      continue;
+    }
+    if (escaped) {
+      escaped = false;
+      if (code < 0x20) {
+        out += escapeJsonControlChar(code);
+        changed = true;
+      } else {
+        out += ch;
+      }
+      continue;
+    }
+    if (ch === "\\") {
+      out += ch;
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      out += ch;
+      inString = false;
+      continue;
+    }
+    if (code < 0x20) {
+      out += escapeJsonControlChar(code);
+      changed = true;
+      continue;
+    }
+    out += ch;
+  }
+  state.inString = inString;
+  state.escaped = escaped;
+  return changed ? out : text;
+}
+
+function escapeControlCharsInJsonStrings(text) {
+  return sanitizeJsonFragment(text, { inString: false, escaped: false });
+}
+
+// 先按标准 JSON 解析；失败时修复字符串内的裸控制字符再试一次。
+// 返回 { ok, value, repaired? }，repaired 表示确实修复过、调用方应转发修复后的文本。
+function parseJsonLenient(text) {
+  try {
+    return { ok: true, value: JSON.parse(text) };
+  } catch (error) {
+    const repaired = escapeControlCharsInJsonStrings(text);
+    if (repaired !== text) {
+      try {
+        return { ok: true, value: JSON.parse(repaired), repaired };
+      } catch (_) {
+        // 修复后仍不合法，按原始解析错误处理
+      }
+    }
+    return { ok: false, error };
+  }
+}
+
+// tool_calls[].function.arguments 是「JSON 字符串里再套一层 JSON」。
+// 参数 JSON 内部的裸控制字符必须在网关里转义，否则客户端二次 JSON.parse 时
+// 仍会报 Bad control character。流式参数按块到达，用 argStates 保存跨块状态。
+function repairToolCallArguments(container, argStates) {
+  const toolCalls = Array.isArray(container?.tool_calls)
+    ? container.tool_calls
+    : null;
+  if (!toolCalls) return false;
+  let changed = false;
+  for (let i = 0; i < toolCalls.length; i++) {
+    const toolCall = toolCalls[i];
+    const fn = toolCall?.function;
+    if (!fn || typeof fn.arguments !== "string" || fn.arguments === "") {
+      continue;
+    }
+    const key = Number.isInteger(toolCall?.index) ? toolCall.index : i;
+    let state = argStates.get(key);
+    // 新 tool call（带 id）从字符串外的干净状态重新开始扫描
+    if (!state || typeof toolCall?.id === "string") {
+      state = { inString: false, escaped: false };
+      argStates.set(key, state);
+    }
+    const fixed = sanitizeJsonFragment(fn.arguments, state);
+    if (fixed !== fn.arguments) {
+      fn.arguments = fixed;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+// 请求历史里的 assistant.tool_calls 参数是完整 JSON 文本，逐条修复即可
+function repairRequestToolArguments(body) {
+  const messages = Array.isArray(body?.messages) ? body.messages : null;
+  if (!messages) return false;
+  let changed = false;
+  for (const message of messages) {
+    if (!message || !Array.isArray(message.tool_calls)) continue;
+    if (repairToolCallArguments(message, new Map())) changed = true;
+  }
+  return changed;
+}
+
+// 非流式完成响应里的 tool_calls 参数同样是完整 JSON 文本
+function repairCompletionToolArguments(data) {
+  const choices = Array.isArray(data?.choices) ? data.choices : [];
+  let changed = false;
+  for (const choice of choices) {
+    if (repairToolCallArguments(choice?.message, new Map())) changed = true;
+    if (repairToolCallArguments(choice?.delta, new Map())) changed = true;
+  }
+  return changed;
+}
+
+// 用修复后的 JSON 文本重建 SSE 的 data 行（保留 data: 前缀与缩进）
+function replaceSseDataLine(line, data) {
+  const position = line.indexOf("data:");
+  if (position === -1) return line;
+  return `${line.slice(0, position + 5)} ${data}`;
+}
+
 // 读取并解析请求体
 // 返回 { isJson, parsed, raw, invalidJson }：
 // - isJson=true  使用 parsed（已解析的 JSON 对象/数组）
@@ -39,11 +190,12 @@ async function readRequestBody(request) {
     return { isJson: true, parsed: {}, raw: bytes };
   }
 
-  try {
-    return { isJson: true, parsed: JSON.parse(text), raw: bytes };
-  } catch (_) {
-    return { isJson: true, parsed: null, raw: bytes, invalidJson: true };
+  const parsed = parseJsonLenient(text);
+  if (parsed.ok) {
+    repairRequestToolArguments(parsed.value);
+    return { isJson: true, parsed: parsed.value, raw: bytes };
   }
+  return { isJson: true, parsed: null, raw: bytes, invalidJson: true };
 }
 
 // 允许透传给上游的额外请求头白名单（不含认证头，认证头单独处理）
@@ -438,6 +590,8 @@ function normalizeOpenAIChatSSE(body, idleMs, fallbackModel) {
   let lastId = "";
   let lastModel = fallbackModel || "";
   let lastChoiceIndex = 0;
+  // 流式 tool_calls.arguments 分块到达，跨块记录字符串状态以便修复裸控制字符
+  const toolArgStates = new Map();
 
   const emit = (controller, text) => controller.enqueue(encoder.encode(text));
 
@@ -511,9 +665,24 @@ function normalizeOpenAIChatSSE(body, idleMs, fallbackModel) {
 
     if (eventData) {
       let chunk = null;
-      try {
-        chunk = JSON.parse(eventData);
-      } catch (_) {
+      const parsed = parseJsonLenient(eventData);
+      if (parsed.ok) {
+        chunk = parsed.value;
+        let repaired = parsed.repaired !== undefined;
+        const chunkChoices = Array.isArray(chunk?.choices) ? chunk.choices : [];
+        for (const choice of chunkChoices) {
+          if (repairToolCallArguments(choice?.delta, toolArgStates)) {
+            repaired = true;
+          }
+          if (repairToolCallArguments(choice?.message, toolArgStates)) {
+            repaired = true;
+          }
+        }
+        // 修复过就重新序列化这一行；否则保持原始字节透传
+        if (repaired) {
+          line = replaceSseDataLine(line, JSON.stringify(chunk));
+        }
+      } else {
         // 非 JSON 的 data 行原样透传；内容流里出现这种行通常意味着上游报错
         if (!upstreamErrorMessage) {
           upstreamErrorMessage = `Upstream sent a non-JSON SSE data line: ${eventData.slice(0, 500)}`;
@@ -986,9 +1155,11 @@ export async function handleProxyRequest(request, options = {}) {
   if (lowerContentType.includes("application/json")) {
     const rawText = await readUpstreamText(response.body, idleTimeoutMs);
     let data;
-    try {
-      data = JSON.parse(rawText);
-    } catch (_) {
+    const parsed = parseJsonLenient(rawText);
+    if (parsed.ok) {
+      data = parsed.value;
+      repairCompletionToolArguments(data);
+    } else {
       // 上游声明 JSON 但 body 不是合法 JSON（空 body、截断、HTML 错误页等）。
       // 流式 Chat 请求仍返回 SSE 错误流；其它情况原样透传，保留上游状态码，
       // 避免把上游的 4xx/5xx 变成代理自己的 500。
