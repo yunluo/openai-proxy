@@ -741,11 +741,15 @@ function normalizeOpenAIChatSSE(body, idleMs, fallbackModel) {
   // reason=unknown）。pull 循环里错误也会走 finishTerminal，补出可识别的
   // error 事件 + [DONE]。pull 只在消费者要数据时触发，背压语义不变。
   const reader = source.getReader();
+  // 客户端断开后，挂起的 reader.read() 会以 done:true 完成；此时绝不能再向
+  // 已取消的 controller enqueue/close（会抛 TypeError 落进 catch 造成噪音）
+  let clientCancelled = false;
 
   return new ReadableStream({
     async pull(controller) {
       try {
         const { done, value } = await reader.read();
+        if (clientCancelled) return;
         if (done) {
           // 上游正常结束但可能没发 [DONE]：flush 剩余缓冲并补终止事件
           buffer += decoder.decode();
@@ -759,6 +763,7 @@ function normalizeOpenAIChatSSE(body, idleMs, fallbackModel) {
         buffer = lines.pop() || "";
         for (const line of lines) handleLine(controller, line, false);
       } catch (error) {
+        if (clientCancelled) return;
         // 上游中途断流/空闲超时：同样补 error 事件 + [DONE]，并把真实原因
         // 带给客户端，而不是让它猜「流为什么断了」
         if (!upstreamErrorMessage) {
@@ -774,6 +779,7 @@ function normalizeOpenAIChatSSE(body, idleMs, fallbackModel) {
       }
     },
     cancel() {
+      clientCancelled = true;
       return reader.cancel().catch(() => {});
     },
   });
