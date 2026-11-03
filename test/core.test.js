@@ -611,6 +611,49 @@ test("SSE 修复：已输出 tool_calls 时合成 finish_reason=tool_calls", asy
   });
 });
 
+test("SSE 修复：只收到 reasoning 就断流时补 error 事件，不伪造成功", async () => {
+  // 智谱经 Cloudflare 出口常见：思考阶段中途被上游硬切断，正文一个字都没吐。
+  // 此时伪造 finish_reason=stop 会让客户端把空回答当成功；应补 error 事件
+  // 让 agent 客户端走重试。
+  const sse =
+    'data: {"id":"chatcmpl-r","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"思考"}}]}\n\n' +
+    'data: {"id":"chatcmpl-r","choices":[{"index":0,"delta":{"reasoning_content":"中"}}]}\n\n';
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/glm_cp/v1/chat/completions", {
+        body: { model: "m", stream: true, messages: [] },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.text();
+    assert.doesNotMatch(out, /"finish_reason":"(stop|tool_calls)"/);
+    assert.match(out, /"type":"upstream_stream_error"/);
+    assert.match(out, /reasoning before any content/);
+    assert.ok(out.endsWith("data: [DONE]\n\n"));
+  });
+});
+
+test("SSE 修复：reasoning 之后已有正文时断流仍补合成 stop", async () => {
+  const sse =
+    'data: {"id":"chatcmpl-r2","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"思考"}}]}\n\n' +
+    'data: {"id":"chatcmpl-r2","choices":[{"index":0,"delta":{"content":"正文开头"}}]}\n\n';
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/glm_cp/v1/chat/completions", {
+        body: { model: "m", stream: true, messages: [] },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.text();
+    assert.match(out, /"finish_reason":"stop"/);
+    assert.ok(out.endsWith("data: [DONE]\n\n"));
+  });
+});
+
 test("SSE 修复：跨 chunk 拆行也能识别并补齐终止块", async () => {
   const encoder = new TextEncoder();
   const pieces = [

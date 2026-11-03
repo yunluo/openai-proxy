@@ -657,6 +657,7 @@ function normalizeOpenAIChatSSE(body, idleMs, fallbackModel) {
   let sawChoice = false;
   let sawFinishReason = false;
   let sawToolCalls = false;
+  let sawContent = false;
   let sawDone = false;
   // 上游在流内报错（data: {"error":…} 或非 JSON 的 data 行）：此时不能补成功终止块，
   // 否则会把失败伪装成正常结束；但也不能让流静默结束，必须给客户端一个它能识别的
@@ -702,17 +703,26 @@ function normalizeOpenAIChatSSE(body, idleMs, fallbackModel) {
   // 流结束时必须给客户端一个它能识别的终止事件：
   // - 已有 finish_reason → 只补 [DONE]
   // - 上游报错（且客户端无法从原始事件里读到 error）→ 补 OpenAI 格式的 error 事件
-  // - 收到过内容但没有 finish_reason → 补合成终止块
-  // - 什么都没收到 → 明确报「空流」，而不是静默结束
+  // - 已输出正文或 tool_calls 但没有 finish_reason → 补合成终止块
+  // - 只收到 reasoning（思考中途被上游掐断）或什么都没收到 → 明确报错，
+  //   不伪造成功：agent 客户端会看到正文为空的「成功」回答，错误事件才能
+  //   触发它的重试逻辑
   const finishTerminal = (controller, isDone) => {
     if (!sawFinishReason && !terminalEmitted) {
       if (upstreamErrorMessage || upstreamErrorStructured) {
         if (!upstreamErrorStructured) {
           emit(controller, buildErrorChunk(upstreamErrorMessage));
         }
-      } else if (sawChoice) {
+      } else if (sawChoice && (sawContent || sawToolCalls)) {
         emit(controller, buildFinishChunk());
         sawFinishReason = true;
+      } else if (sawChoice) {
+        emit(
+          controller,
+          buildErrorChunk(
+            "Upstream stream ended during reasoning before any content was produced.",
+          ),
+        );
       } else {
         emit(
           controller,
@@ -819,6 +829,12 @@ function normalizeOpenAIChatSSE(body, idleMs, fallbackModel) {
           const delta = choice.delta || choice.message;
           if (Array.isArray(delta?.tool_calls) && delta.tool_calls.length > 0) {
             sawToolCalls = true;
+          }
+          if (
+            (typeof delta?.content === "string" && delta.content) ||
+            (Array.isArray(delta?.content) && delta.content.length > 0)
+          ) {
+            sawContent = true;
           }
         }
       }
