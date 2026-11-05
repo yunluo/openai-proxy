@@ -1,51 +1,81 @@
-// GLM 流式断流探测：直连上游（glm_cp 通道）与线上网关各跑 N 轮 chat 流式请求，
+// GLM 流式断流探测：直连上游与线上网关各通道跑 N 轮 chat 流式请求，
 // 记录每轮的结束形态（finish_reason / [DONE] / error 帧 / 裸断流），量化断流频率。
 //
 // 背景：严格客户端（opencode、ZCode 等）在 SSE 流没有以 finish_reason 终止时会报
-// 「provider stream ended before completion」；智谱上游断流频率异常偏高，先摸清
-// 上游真实行为，再决定网关侧的修复策略。
+// 「provider stream ended before completion」；智谱/火山上游经 Cloudflare 出口断流
+// 频率异常偏高，先摸清各通道真实行为，再决定网关侧的修复策略。
+// 断流轮的 closeType 同时能反映部署状态：clean-close（裸断）= 线上是旧代码；
+// error-frame（带错误事件）= 已部署终止兜底。
 //
 // 用法（Node >= 18 或 Bun 均可，无第三方依赖）：
-//   bun scripts/probe-glm-stream.js            # direct + gateway 各 3 轮
-//   bun scripts/probe-glm-stream.js direct 5   # 只测直连上游，5 轮
-//   bun scripts/probe-glm-stream.js gateway 3  # 只测线上网关，3 轮
+//   bun scripts/probe-glm-stream.js              # 三个通道各 3 轮
+//   bun scripts/probe-glm-stream.js direct 5     # 只测直连上游，5 轮
+//   bun scripts/probe-glm-stream.js glm_cp 3     # 只测网关 glm_cp（GLM 官方）
+//   bun scripts/probe-glm-stream.js volcengine 3 # 只测网关 volcengine（火山）
 //
 // 环境变量：
-//   GLM_KEY      必需，编程套餐 key（额度在 glm_cp 通道）
-//   GLM_MODEL    模型覆盖，默认 glm-5.3-flash（断流报错里的模型）
-//   GATEWAY_BASE 网关地址，默认 https://max.gitcafe.ink
-//   PROBE_PROMPT 诱导长输出的提示词覆盖
+//   GLM_KEY         GLM 通道 key（直连与 glm_cp），必需
+//   BYTEDANCE_KEY   火山通道 key，测 volcengine 时必需
+//   GLM_MODEL       GLM 通道模型覆盖，默认 glm-5.3-flash
+//   BYTEDANCE_MODEL 火山通道模型覆盖，默认 glm-5.3-flash
+//   GATEWAY_BASE    网关地址，默认 https://max.gitcafe.ink
+//   PROBE_PROMPT    诱导长输出的提示词覆盖
 //
 // 异常轮的原始 SSE 会写到 os.tmpdir()/glm-stream-probe-<target>-<n>.log 供离线分析。
 
 const GLM_UPSTREAM_BASE = "https://open.bigmodel.cn/api/coding/paas/v4";
+const ARK_UPSTREAM_BASE = "https://ark.cn-beijing.volces.com/api/coding/v3";
 const GATEWAY_BASE = (process.env.GATEWAY_BASE || "https://max.gitcafe.ink").replace(
   /\/+$/,
   "",
 );
-const KEY = process.env.GLM_KEY;
-const MODEL = process.env.GLM_MODEL || "glm-5.3-flash";
 const PROMPT =
   process.env.PROBE_PROMPT ||
   "请写一篇不少于 1200 字的散文，主题是山中的四季，要求一直连贯地写到结尾，中途不要停下来。";
 const REQUEST_TIMEOUT_MS = 180000;
+// 追加到请求体的自定义参数（JSON 字符串），例如关闭思考：
+//   PROBE_EXTRA_BODY={"thinking":{"type":"disabled"}}
+let EXTRA_BODY = null;
+try {
+  if (process.env.PROBE_EXTRA_BODY) EXTRA_BODY = JSON.parse(process.env.PROBE_EXTRA_BODY);
+} catch (error) {
+  console.error(`[FATAL] PROBE_EXTRA_BODY 不是合法 JSON: ${error.message}`);
+  process.exit(1);
+}
 
 const TARGETS = {
   direct: {
-    label: "直连上游 glm_cp",
+    label: "直连上游 glm_cp（GLM 官方）",
     url: `${GLM_UPSTREAM_BASE}/chat/completions`,
+    keyEnv: "GLM_KEY",
+    model: process.env.GLM_MODEL || "glm-5.3-flash",
   },
-  gateway: {
-    label: "线上网关 /glm_cp",
+  glm_cp: {
+    label: "线上网关 /glm_cp（GLM 官方）",
     url: `${GATEWAY_BASE}/glm_cp/v1/chat/completions`,
+    keyEnv: "GLM_KEY",
+    model: process.env.GLM_MODEL || "glm-5.3-flash",
+  },
+  volcengine: {
+    label: "线上网关 /volcengine（火山）",
+    url: `${GATEWAY_BASE}/volcengine/v1/chat/completions`,
+    keyEnv: "BYTEDANCE_KEY",
+    model: process.env.BYTEDANCE_MODEL || "glm-5.3-flash",
+  },
+  volcengine_direct: {
+    label: "直连上游 volcengine（火山）",
+    url: `${ARK_UPSTREAM_BASE}/chat/completions`,
+    keyEnv: "BYTEDANCE_KEY",
+    model: process.env.BYTEDANCE_MODEL || "glm-5.3-flash",
   },
 };
 
 // 单轮探测：发起流式请求并逐行记录原始 SSE，返回结束形态分类
-async function probeRound(url, round) {
+async function probeRound(target, name, round, key) {
+  const url = target.url;
   const started = Date.now();
   const outcome = {
-    target: url,
+    target: name,
     round,
     status: null,
     durationMs: 0,
@@ -68,13 +98,14 @@ async function probeRound(url, round) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${KEY}`,
+        Authorization: `Bearer ${key}`,
       },
       body: JSON.stringify({
-        model: MODEL,
+        model: target.model,
         messages: [{ role: "user", content: PROMPT }],
         stream: true,
         max_tokens: 4096,
+        ...(EXTRA_BODY || {}),
       }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
@@ -160,8 +191,7 @@ async function probeRound(url, round) {
     outcome.sawFinishReason &&
     outcome.errorFrames.length === 0;
   if (!healthy) {
-    const tag = url.includes("bigmodel.cn") ? "direct" : "gateway";
-    const logPath = `${tmpDir()}\\glm-stream-probe-${tag}-${round}.log`;
+    const logPath = `${tmpDir()}\\glm-stream-probe-${name}-${round}.log`;
     try {
       await import("node:fs").then((fs) =>
         fs.promises.writeFile(logPath, rawLines.join("\n"), "utf8"),
@@ -208,39 +238,49 @@ function summarize(outcome) {
 }
 
 async function main() {
-  if (!KEY) {
-    console.error("[FATAL] GLM_KEY 未设置");
-    process.exit(1);
-  }
   const args = process.argv.slice(2);
-  const which = ["direct", "gateway", "both"].includes(args[0]) ? args[0] : "both";
+  const which = TARGETS[args[0]] ? args[0] : "all";
   const rounds = Math.max(1, Math.min(10, parseInt(args[1], 10) || 3));
 
   const proxy = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY;
   if (proxy) console.log(`[WARN] 检测到本地代理 ${proxy}，若 401/连不上请把目标域名加入 NO_PROXY`);
-  console.log(`[MODEL] ${MODEL}`);
   console.log(`[ROUNDS] ${rounds} per target\n`);
 
-  const targets = which === "both" ? ["direct", "gateway"] : [which];
+  const targets = which === "all" ? Object.keys(TARGETS) : [which];
   const all = [];
   for (const name of targets) {
     const target = TARGETS[name];
-    console.log(`=== ${target.label} === ${target.url}`);
+    const key = process.env[target.keyEnv];
+    console.log(`=== ${target.label} === ${target.url} (model: ${target.model})`);
+    if (!key) {
+      console.log(`[SKIP] ${target.keyEnv} 未设置\n`);
+      continue;
+    }
     for (let i = 1; i <= rounds; i++) {
-      const outcome = await probeRound(target.url, i);
-      outcome.target = name;
+      const outcome = await probeRound(target, name, i, key);
       all.push(outcome);
       console.log(summarize(outcome));
     }
     console.log("");
   }
 
-  const cuts = all.filter((o) => !["done", "http-error"].includes(o.closeType) || !o.sawFinishReason);
-  console.log(
-    `=== SUMMARY: ${all.length} 轮，健康 ${all.length - cuts.length}，异常 ${cuts.length} ===`,
-  );
-  for (const o of cuts) {
-    console.log(`  异常: [${o.target}] #${o.round} closeType=${o.closeType} ${o.detail || o.rawLog || ""}`);
+  const isHealthy = (o) =>
+    o.closeType === "done" && o.sawFinishReason && o.errorFrames.length === 0;
+  console.log(`=== SUMMARY ===`);
+  for (const name of [...new Set(all.map((o) => o.target))]) {
+    const rows = all.filter((o) => o.target === name);
+    const bad = rows.filter((o) => !isHealthy(o));
+    console.log(
+      `  ${TARGETS[name]?.label || name}: ${rows.length - bad.length}/${rows.length} 健康` +
+        (bad.length
+          ? `，异常 ${bad.map((o) => `#${o.round}:${o.closeType}`).join(" ")}`
+          : ""),
+    );
+  }
+  for (const o of all.filter((o) => !isHealthy(o))) {
+    console.log(
+      `  异常: [${o.target}] #${o.round} closeType=${o.closeType} HTTP ${o.status ?? "-"} ${o.detail || o.rawLog || ""}`,
+    );
   }
 }
 
