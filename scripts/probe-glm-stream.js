@@ -85,6 +85,7 @@ async function probeRound(target, name, round, key) {
     sawFinishReason: false,
     finishReason: "",
     sawDone: false,
+    upstreamId: "",
     errorFrames: [],
     nonJsonLines: [],
     closeType: "unknown", // done | clean-close | error-frame | http-error | timeout | connection-reset
@@ -152,6 +153,9 @@ async function probeRound(target, name, round, key) {
         outcome.sawFinishReason = true;
         outcome.finishReason = choice.finish_reason;
       }
+      if (!outcome.upstreamId && typeof chunk.id === "string" && chunk.id) {
+        outcome.upstreamId = chunk.id;
+      }
       const delta = choice?.delta || choice?.message;
       if (typeof delta?.content === "string") outcome.contentChars += delta.content.length;
     } catch (_) {
@@ -177,6 +181,8 @@ async function probeRound(target, name, round, key) {
         : outcome.sawDone
           ? "done"
           : "clean-close"; // 上游 EOF 但没发 [DONE]
+    // 记录上游 id：与网关诊断端点的记录关联，判断 Worker 侧是否知情
+    outcome.streamId = outcome.upstreamId || "";
   } catch (error) {
     if (buffer) classifyLine(buffer);
     outcome.durationMs = Date.now() - started;
@@ -230,6 +236,7 @@ function summarize(outcome) {
     `${(outcome.durationMs / 1000).toFixed(1)}s`,
     `${outcome.bytes}B/${outcome.events}evt/${outcome.contentChars}字`,
     flags.join(" "),
+    outcome.streamId ? `id=${outcome.streamId}` : "",
     outcome.detail ? `detail=${outcome.detail}` : "",
     outcome.rawLog && !outcome.rawLog.startsWith("(") ? `log=${outcome.rawLog}` : "",
   ]

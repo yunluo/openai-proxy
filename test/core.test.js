@@ -2407,6 +2407,132 @@ test("SSE 修复：JSON 完成体的旧版 function_call 转 SSE 不丢失", asy
 });
 
 // ──────────────────────────────────────────────
+// 快路径（跳过 JSON.parse 的纯文本 chunk）语义等价性
+// Workers free 套餐每请求 10ms CPU 限额，长流的逐 chunk 解析开销会让运行时
+// 终止 Worker（流中途消失、无终止事件）。快路径必须与完整解析等价。
+// ──────────────────────────────────────────────
+
+test("快路径：纯文本 chunk 也能识别 finish_reason 并补终止块", async () => {
+  // 不含 tool_calls/error/usage 的 chunk 走快路径；最后的 finish_reason
+  // 同样必须被识别（否则会误判为「流未完成」）
+  const sse =
+    'data: {"id":"c1","model":"m","choices":[{"index":0,"delta":{"content":"你好"},"finish_reason":null}]}\n\n' +
+    'data: {"id":"c1","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n' +
+    "data: [DONE]\n\n";
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/opencode/v1/chat/completions", {
+        body: { model: "m", stream: true, messages: [] },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.text();
+    assert.match(out, /"finish_reason":"stop"/);
+    assert.ok(!out.includes("upstream_stream_error"));
+    assert.ok(out.endsWith("data: [DONE]\n\n"));
+  });
+});
+
+test("快路径：finish_reason 为空串时仍补合成终止块", async () => {
+  const sse =
+    'data: {"id":"c1","model":"m","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":""}]}\n\n';
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/opencode/v1/chat/completions", {
+        body: { model: "m", stream: true, messages: [] },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.text();
+    assert.match(out, /"finish_reason":"stop"/);
+    assert.ok(out.endsWith("data: [DONE]\n\n"));
+  });
+});
+
+test("快路径：只有 reasoning 的流断流时补 error 事件，不伪造成功", async () => {
+  const sse =
+    'data: {"id":"c1","model":"m","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"思考"}}]}\n\n';
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/opencode/v1/chat/completions", {
+        body: { model: "m", stream: true, messages: [] },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.text();
+    assert.doesNotMatch(out, /"finish_reason":"stop"/);
+    assert.match(out, /"type":"upstream_stream_error"/);
+  });
+});
+
+test("快路径：含 error 字段的 chunk 仍被识别为上游错误", async () => {
+  const sse =
+    'data: {"error":{"type":"rate_limit_error","message":"too many requests"}}\n\n';
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/opencode/v1/chat/completions", {
+        body: { model: "m", stream: true, messages: [] },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.text();
+    assert.match(out, /too many requests/);
+    // 上游已给出结构化 error，不能再补成功终止块
+    assert.doesNotMatch(out, /"finish_reason":"stop"/);
+  });
+});
+
+test("快路径：纯文本 chunk 里的裸控制字符仍被修复", async () => {
+  // 快路径的判据之一是「含裸控制字符 → 走完整解析修复」，此处锁定该行为
+  const sse =
+    'data: {"id":"c1","model":"m","choices":[{"index":0,"delta":{"content":"Line 1\tLine 2"}}]}\n\n';
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/opencode/v1/chat/completions", {
+        body: { model: "m", stream: true, messages: [] },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.text();
+    const line = out.split("\n").find((l) => l.includes('"content"'));
+    assert.ok(line, "content chunk 应被转发");
+    const forwarded = JSON.parse(line.slice(6));
+    assert.equal(forwarded.choices[0].delta.content, "Line 1\tLine 2");
+  });
+});
+
+test("快路径：tool_calls chunk 仍走完整修复路径", async () => {
+  const sse =
+    'data: {"id":"c1","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"f","arguments":"{\\"a\\":\\"b\\t\\"}"}}]}}]}\n\n';
+
+  await withUpstream(sseUpstream(sse), async () => {
+    const res = await handleProxyRequest(
+      proxyRequest("/opencode/v1/chat/completions", {
+        body: { model: "m", stream: true, messages: [] },
+      }),
+      makeOptions(),
+    );
+
+    const out = await res.text();
+    const line = out.split("\n").find((l) => l.includes('"tool_calls"'));
+    assert.ok(line, "tool_calls chunk 应被转发");
+    const forwarded = JSON.parse(line.slice(6));
+    const args = forwarded.choices[0].delta.tool_calls[0].function.arguments;
+    assert.deepEqual(JSON.parse(args), { a: "b\t" });
+  });
+});
+
+// ──────────────────────────────────────────────
 // 上游中途断流（stream ended before completion）
 // ──────────────────────────────────────────────
 

@@ -1,3 +1,70 @@
+// 流结束诊断（隔离实例内存环形缓冲 + 可选 KV 持久化，经 /v1/debug/stream-ends 读取）：
+// 归因断流发生在哪条腿——client-cancel=客户端侧断开；upstream-eof-no-finish=
+// 上游优雅 EOF 且未给出终止原因；upstream-interrupted=读上游时抛错；
+// complete=上游流自带终止原因正常走完。KV 记录跨隔离实例可见，24h 过期。
+const STREAM_DIAG = {
+  isolateId: `i-${Math.random().toString(36).slice(2, 10)}`,
+  started: 0,
+  records: [],
+  kv: null,
+  ctx: null,
+  enabled: false,
+};
+
+function recordStreamEnd(kind, detail) {
+  const record = { ts: new Date().toISOString(), kind, detail };
+  STREAM_DIAG.records.push(record);
+  if (STREAM_DIAG.records.length > 80) STREAM_DIAG.records.shift();
+  console.warn(`[maxapi] stream ${kind} ${detail}`);
+  writeDiagRecord(record);
+}
+
+// KV 写入：跨隔离实例可见，用时间戳做键（保证按时间排序）
+function writeDiagRecord(record) {
+  const { kv, ctx } = STREAM_DIAG;
+  if (!kv || !STREAM_DIAG.enabled) return;
+  const key = `diag:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    const put = kv.put(key, JSON.stringify(record), { expirationTtl: 86400 });
+    if (ctx?.waitUntil) ctx.waitUntil(put.catch(() => {}));
+  } catch (_) {
+    // 诊断写失败不影响转发
+  }
+}
+
+// options 传入 KV/开关：调试端点请求不走 handleProxyRequest，需在此自行初始化
+export async function getStreamDiagnostics(options = {}) {
+  if (options.kv) STREAM_DIAG.kv = options.kv;
+  if (options.executionCtx) STREAM_DIAG.ctx = options.executionCtx;
+  if (options.streamDiagEnabled !== undefined) {
+    STREAM_DIAG.enabled =
+      options.streamDiagEnabled === true || options.streamDiagEnabled === "1";
+  }
+  let kvRecords = [];
+  if (STREAM_DIAG.kv) {
+    try {
+      // list 按键名（时间戳）升序返回，limit 截断的是「最早」的那些；这里取足量
+      // 再按时间排序，保证最新记录可见
+      const list = await STREAM_DIAG.kv.list({ prefix: "diag:", limit: 1000 });
+      const names = (list.keys || []).map((k) => k.name).sort();
+      kvRecords = (await Promise.all(names.map((k) => STREAM_DIAG.kv.get(k))))
+        .filter(Boolean)
+        .map((v) => JSON.parse(v));
+      // 键名里的时间戳是 base36，字典序不等于时间序，必须按记录里的 ts 排序
+      kvRecords.sort((a, b) => String(a.ts).localeCompare(String(b.ts)));
+      kvRecords = kvRecords.slice(-120);
+    } catch (_) {
+      // KV 读取失败时退回内存记录
+    }
+  }
+  return {
+    isolateId: STREAM_DIAG.isolateId,
+    started: STREAM_DIAG.started,
+    kvEnabled: STREAM_DIAG.enabled,
+    records: kvRecords.concat(STREAM_DIAG.records),
+  };
+}
+
 // 从 headers 对象中安全地获取指定字段（兼容 Headers 对象和普通对象）
 function getHeader(headers, name) {
   if (typeof headers.get === "function") {
@@ -262,12 +329,23 @@ async function readRequestBody(request) {
     return { isJson: true, parsed: {}, raw: bytes };
   }
 
-  const parsed = parseJsonLenient(text);
-  if (parsed.ok) {
-    repairRequestToolArguments(parsed.value);
-    return { isJson: true, parsed: parsed.value, raw: bytes };
-  }
+    const parsed = parseJsonLenient(text);
+    if (parsed.ok) {
+      // 修复过才需要重新序列化；没修复就转发原始字节（省掉一次全量 stringify）
+      const repaired = repairRequestToolArguments(parsed.value);
+      return {
+        isJson: true,
+        parsed: parsed.value,
+        raw: bytes,
+        repaired,
+      };
+    }
   return { isJson: true, parsed: null, raw: bytes, invalidJson: true };
+}
+
+// 请求体是否被修复器改动过（决定能否直接转发原始字节）
+function requestBodyNeedsRewrite(parsedBody) {
+  return parsedBody?.repaired === true;
 }
 
 // 允许透传给上游的额外请求头白名单（不含认证头，认证头单独处理）
@@ -647,7 +725,32 @@ function buildChatSSEError(message, type = "upstream_error") {
   );
 }
 
+// 快路径判别：这个 SSE data 行是否需要完整 JSON 解析？
+//
+// Workers free 套餐每请求只有 10ms CPU 限额，而长流会有数千个 chunk。若每个
+// chunk 都做一次完整 JSON.parse，CPU 会被自己的解析开销打满，运行时直接终止
+// Worker（表现为流中途消失、没有任何终止事件、Worker 侧也没有终局记录）。
+//
+// 绝大多数 chunk 只是纯文本增量（content / reasoning_content），不含工具调用
+// 与终止信息，对它们只做字符串级判断即可，跳过 JSON.parse。
+// 需要完整解析的情况：含 tool_calls / function_call / error / finish_reason /
+// usage，或含裸控制字符（外层 JSON 非法，需要修复路径）。
+const NEEDS_FULL_PARSE_RE =
+  /"tool_calls"|"function_call"|"error"|"finish_reason"|"usage"/;
+// 裸控制字符会让外层 JSON 非法，必须走完整解析（修复路径）
+const HAS_CONTROL_CHAR_RE = /[\u0000-\u001f]/;
+const HAS_ERROR_RE = /"error"\s*:/;
+const HAS_TOOL_CALLS_RE = /"tool_calls"\s*:/;
+const HAS_FUNCTION_CALL_RE = /"function_call"\s*:/;
+const HAS_USAGE_RE = /"usage"\s*:/;
+// delta 里是否有非空 content（字符串形式）
+const HAS_CONTENT_RE = /"content"\s*:\s*"[^"]+/;
+const HAS_REASONING_RE = /"reasoning_content"\s*:\s*"[^"]+/;
+// finish_reason 是非空字符串才算有效（空串是上游占位值，须忽略）
+const HAS_FINISH_REASON_RE = /"finish_reason"\s*:\s*"[^"]+/;
+
 function normalizeOpenAIChatSSE(body, idleMs, fallbackModel) {
+  STREAM_DIAG.started++;
   const source = withIdleTimeout(body, idleMs);
   if (!source) return body;
 
@@ -753,7 +856,39 @@ function normalizeOpenAIChatSSE(body, idleMs, fallbackModel) {
 
     if (eventData) {
       let chunk = null;
-      const parsed = parseJsonLenient(eventData);
+      // 快路径：绝大多数 chunk 只是纯文本增量（content / reasoning_content），
+      // 不含工具调用、终止原因与错误信息。对它们只做字符串级判断，跳过
+      // JSON.parse —— Workers free 套餐每请求 10ms CPU 限额，长流的解析
+      // 开销足以让运行时终止 Worker（流中途消失且无终止事件）。
+      const needsFullParse =
+        NEEDS_FULL_PARSE_RE.test(eventData) ||
+        HAS_CONTROL_CHAR_RE.test(eventData) ||
+        // 快路径的前提是「这行确实是 JSON 对象」：非 JSON 的 data 行通常是
+        // 上游报错文本（如 "upstream overloaded"），必须走完整解析来识别
+        !eventData.startsWith("{");
+      if (!needsFullParse) {
+        // 快路径状态更新（与完整解析等价，但不做 JSON.parse）
+        if (HAS_CONTENT_RE.test(eventData)) sawContent = true;
+        if (HAS_FINISH_REASON_RE.test(eventData)) sawFinishReason = true;
+        if (HAS_TOOL_CALLS_RE.test(eventData)) sawToolCalls = true;
+        if (HAS_ERROR_RE.test(eventData) && !upstreamErrorMessage) {
+          upstreamErrorMessage = "Upstream reported an error.";
+        }
+        if (eventData.includes('"choices"')) sawChoice = true;
+        const idx = /"index"\s*:\s*(\d+)/.exec(eventData);
+        if (idx) lastChoiceIndex = Number(idx[1]);
+        if (!lastId) {
+          const m = /"id"\s*:\s*"([^"]+)"/.exec(eventData);
+          if (m) lastId = m[1];
+        }
+        if (!lastModel) {
+          const m = /"model"\s*:\s*"([^"]+)"/.exec(eventData);
+          if (m) lastModel = m[1];
+        }
+      }
+      const parsed = needsFullParse
+        ? parseJsonLenient(eventData)
+        : { ok: false, skipped: true };
       if (parsed.ok) {
         chunk = parsed.value;
         let repaired = parsed.repaired !== undefined;
@@ -790,7 +925,7 @@ function normalizeOpenAIChatSSE(body, idleMs, fallbackModel) {
         if (repaired) {
           line = replaceSseDataLine(line, JSON.stringify(chunk));
         }
-      } else {
+      } else if (!parsed.skipped) {
         // 非 JSON 的 data 行原样透传；内容流里出现这种行通常意味着上游报错
         if (!upstreamErrorMessage) {
           upstreamErrorMessage = `Upstream sent a non-JSON SSE data line: ${eventData.slice(0, 500)}`;
@@ -858,24 +993,61 @@ function normalizeOpenAIChatSSE(body, idleMs, fallbackModel) {
   // 客户端断开后，挂起的 reader.read() 会以 done:true 完成；此时绝不能再向
   // 已取消的 controller enqueue/close（会抛 TypeError 落进 catch 造成噪音）
   let clientCancelled = false;
+  // 诊断断流用：区分「客户端腿断」与「上游腿断」全靠这三类日志的互斥出现
+  let upstreamBytes = 0;
+  // 我方 JS 处理累计耗时（不含等待上游的 I/O 时间）。free 套餐每请求 10ms CPU
+  // 限额，若这里的累计值逼近上限，说明 Worker 是被运行时因 CPU 超限杀掉的。
+  // 必须用 performance.now()（浮点毫秒）；Date.now() 的整数毫秒会把每批
+  // 不足 1ms 的处理截断成 0，导致严重低估。
+  let procMs = 0;
+  let procStart = 0;
+  let chunkCount = 0;
+  let heartbeatCount = 0;
+  const now = () => performance.now();
+  const markStart = () => {
+    procStart = now();
+  };
+  const markEnd = () => {
+    procMs += now() - procStart;
+  };
 
   return new ReadableStream({
     async pull(controller) {
       try {
         const { done, value } = await reader.read();
         if (clientCancelled) return;
+        if (value) upstreamBytes += value.byteLength;
         if (done) {
           // 上游正常结束但可能没发 [DONE]：flush 剩余缓冲并补终止事件
           buffer += decoder.decode();
           if (buffer) handleLine(controller, buffer, true);
+          const upstreamFinishedCleanly = sawFinishReason;
           finishTerminal(controller, false);
+          recordStreamEnd(
+            upstreamFinishedCleanly ? "complete" : "upstream-eof-no-finish",
+            `bytes=${upstreamBytes} procMs=${procMs.toFixed(1)} chunks=${chunkCount} id=${lastId || "-"}`,
+          );
           controller.close();
           return;
         }
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
+        markStart();
         for (const line of lines) handleLine(controller, line, false);
+        markEnd();
+        chunkCount += lines.length;
+        // 心跳：长流每 128 个 chunk 记录一次累计 CPU 耗时。若流被 CPU 超限杀掉，
+        // 最后一条心跳会显示 procMs 逼近套餐限额；若被杀时连心跳都没有，说明
+        // 不是 CPU 问题（进程被外部终止）
+        heartbeatCount += lines.length;
+        if (heartbeatCount >= 128) {
+          heartbeatCount = 0;
+          recordStreamEnd(
+            "heartbeat",
+            `bytes=${upstreamBytes} procMs=${procMs.toFixed(1)} chunks=${chunkCount} id=${lastId || "-"}`,
+          );
+        }
       } catch (error) {
         if (clientCancelled) return;
         // 上游中途断流/空闲超时：同样补 error 事件 + [DONE]，并把真实原因
@@ -888,12 +1060,20 @@ function normalizeOpenAIChatSSE(body, idleMs, fallbackModel) {
                   errorMessageOf(error) || "unknown error"
                 }`;
         }
+        recordStreamEnd(
+          "upstream-interrupted",
+          `bytes=${upstreamBytes} procMs=${procMs.toFixed(1)} chunks=${chunkCount} msg=${upstreamErrorMessage.slice(0, 120)}`,
+        );
         finishTerminal(controller, false);
         controller.close();
       }
     },
     cancel() {
       clientCancelled = true;
+      recordStreamEnd(
+        "client-cancel",
+        `bytes=${upstreamBytes} procMs=${procMs.toFixed(1)} chunks=${chunkCount} id=${lastId || "-"}`,
+      );
       return reader.cancel().catch(() => {});
     },
   });
@@ -954,6 +1134,17 @@ function repairSseControlChars(body, idleMs) {
   let clientCancelled = false;
   // Responses 工具参数分片按 item_id 跨块续扫的状态
   const toolArgStates = new Map();
+  // 与 Chat 路径同样的 CPU 计量（诊断断流归因用）
+  let procMs = 0;
+  let procStart = 0;
+  let upstreamBytes = 0;
+  let chunkCount = 0;
+  const markStart = () => {
+    procStart = performance.now();
+  };
+  const markEnd = () => {
+    procMs += performance.now() - procStart;
+  };
 
   const handleLine = (controller, line, isFinal) => {
     const position = line.indexOf("data:");
@@ -982,24 +1173,42 @@ function repairSseControlChars(body, idleMs) {
       try {
         const { done, value } = await reader.read();
         if (clientCancelled) return;
+        if (value) upstreamBytes += value.byteLength;
         if (done) {
           buffer += decoder.decode();
+          markStart();
           if (buffer) handleLine(controller, buffer, true);
+          markEnd();
+          recordStreamEnd(
+            "complete",
+            `resp bytes=${upstreamBytes} procMs=${procMs.toFixed(1)} chunks=${chunkCount}`,
+          );
           controller.close();
           return;
         }
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
+        markStart();
         for (const line of lines) handleLine(controller, line, false);
+        markEnd();
+        chunkCount += lines.length;
       } catch (error) {
         // 透传路径不合成终止事件：流错误保持原有裸错误语义
         if (clientCancelled) return;
+        recordStreamEnd(
+          "upstream-interrupted",
+          `resp bytes=${upstreamBytes} procMs=${procMs.toFixed(1)} chunks=${chunkCount}`,
+        );
         controller.error(error);
       }
     },
     cancel() {
       clientCancelled = true;
+      recordStreamEnd(
+        "client-cancel",
+        `resp bytes=${upstreamBytes} procMs=${procMs.toFixed(1)} chunks=${chunkCount}`,
+      );
       return reader.cancel().catch(() => {});
     },
   });
@@ -1130,6 +1339,13 @@ function buildModelsResponse(options) {
 // 主代理请求处理函数
 // ──────────────────────────────────────────────
 export async function handleProxyRequest(request, options = {}) {
+  // 流诊断的 KV 与执行上下文按请求注入（隔离实例并发请求共享最后一份配置，
+  // 对诊断记录足够）
+  STREAM_DIAG.kv = options.kv || null;
+  STREAM_DIAG.ctx = options.executionCtx || null;
+  STREAM_DIAG.enabled =
+    options.streamDiagEnabled === true || options.streamDiagEnabled === "1";
+
   // 统一处理相对路径（测试/Node）和完整 URL（Cloudflare Workers）
   const parsedUrl = new URL(request.url, "http://localhost");
   const originalPath = parsedUrl.pathname;
@@ -1235,7 +1451,9 @@ export async function handleProxyRequest(request, options = {}) {
   let requestBodyObj = {};
   let isJsonBody = false;
   if (!["GET", "HEAD"].includes(request.method)) {
+    const parseStart = performance.now();
     const parsedBody = await readRequestBody(request);
+    const parseMs = performance.now() - parseStart;
 
     if (parsedBody.invalidJson) {
       // 声明为 JSON 却解析失败：明确报错，不要把 {} 转发给上游
@@ -1253,7 +1471,19 @@ export async function handleProxyRequest(request, options = {}) {
     if (parsedBody.isJson) {
       isJsonBody = true;
       requestBodyObj = parsedBody.parsed || {};
-      body = JSON.stringify(requestBodyObj);
+      // 重新序列化整份请求体是大头（agent 请求带长对话历史，几百 KB），
+      // 但绝大多数请求一个字节都不需要改——没改过就直接转发原始字节，
+      // 省掉一次全量 JSON.stringify；只有修复过的才重新序列化
+      const stringifyStart = performance.now();
+      const needsRewrite = requestBodyNeedsRewrite(parsedBody);
+      body = needsRewrite
+        ? JSON.stringify(requestBodyObj)
+        : parsedBody.raw || new TextEncoder().encode(JSON.stringify(requestBodyObj));
+      const stringifyMs = performance.now() - stringifyStart;
+      recordStreamEnd(
+        "request-cpu",
+        `bytes=${parsedBody.raw?.byteLength ?? -1} parseMs=${parseMs.toFixed(1)} stringifyMs=${stringifyMs.toFixed(1)} rewritten=${needsRewrite}`,
+      );
     } else {
       // multipart / 音频上传等非 JSON 请求：原样透传字节流与原始 Content-Type
       body = parsedBody.raw;

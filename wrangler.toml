@@ -17,6 +17,13 @@ routes = [
 #   UPSTREAM_TIMEOUT_MS    等上游响应头的超时，默认 300000（非流式请求要等生成完才有响应头）
 #   STREAM_IDLE_TIMEOUT_MS 流式空闲超时，默认 120000；期间没有任何新数据即判定上游卡死
 #   0 表示不限制
+STREAM_DIAG_ENABLED = "1"
+#   STREAM_DIAG_ENABLED    设为 1 后每条流结束时写一条诊断到 KV（/v1/debug/stream-ends 可读），
+#                          用于归因断流发生在客户端腿还是上游腿；排查完可移除以省 KV 写额度
+
+[[kv_namespaces]]
+binding = "STREAM_DIAG"
+id = "fb716401a98f4507a19446e10e33be9b"
 
 [observability]
 enabled = true
@@ -35,4 +42,11 @@ enabled = false
 # Cloudflare 会把 Worker 固定放在到该区域延迟最低的自建数据中心（香港）。
 # 香港/华东（江苏）电信直连路由最优（约 35-45ms），且各上游（智谱/MiniMax/
 # DeepSeek/火山/OpenAI）从香港出口访问均可达。
+#
+# 实测对比（2026-11-06，glm-5.3-flash 流式长文，各 5 轮）：
+#   固定香港：3/5 健康
+#   mode=smart：Worker 实际落在 AMS（阿姆斯特丹），1/5 健康
+# Smart Placement 按上游加权 RTT 选点，海外上游（OpenAI）权重高时会把 Worker
+# 挪到欧洲，对大陆上游（智谱/火山）是更长的跨境路径 —— 反而更易断流。
+# 因此固定香港，不开 smart。
 region = "aws:ap-east-1"

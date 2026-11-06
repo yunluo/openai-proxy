@@ -1,4 +1,4 @@
-import { handleProxyRequest } from "../src/core.js";
+import { handleProxyRequest, getStreamDiagnostics } from "../src/core.js";
 import { API_BASE_WWW, PROVIDERS } from "../src/config.js";
 
 // 从环境变量中加载自定义服务商配置（最多 100 个）
@@ -48,6 +48,9 @@ function buildOptions(env) {
     accessToken: env.PROXY_ACCESS_TOKEN,
     upstreamTimeoutMs: env.UPSTREAM_TIMEOUT_MS,
     streamIdleTimeoutMs: env.STREAM_IDLE_TIMEOUT_MS,
+    // 流结束诊断（断流归因用，见 /v1/debug/stream-ends）
+    kv: env.STREAM_DIAG,
+    streamDiagEnabled: env.STREAM_DIAG_ENABLED,
   };
 }
 
@@ -93,7 +96,7 @@ function withCORS(response) {
 // Cloudflare Workers 入口
 // 原生 Web Standard API，request 直接传入 core.js
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     // OPTIONS 预检请求直接返回
     if (request.method === "OPTIONS") {
       return new Response(null, {
@@ -102,7 +105,27 @@ export default {
       });
     }
 
+    // 断流归因诊断端点：读取流结束记录（仅时间戳/字节数/类别）
+    if (
+      request.method === "GET" &&
+      new URL(request.url).pathname === "/v1/debug/stream-ends"
+    ) {
+      const ctx = { waitUntil: (p) => {} };
+      const options = { ...buildOptions(env), executionCtx: ctx };
+      const diagnostics = await getStreamDiagnostics(options);
+      // request.cf.colo 才是 Worker 的实际执行位置（cf-ray 头里的 colo 是
+      // 处理请求的边缘 PoP，两者不同）
+      diagnostics.executionColo = request.cf?.colo ?? null;
+      diagnostics.country = request.cf?.country ?? null;
+      return withCORS(
+        new Response(JSON.stringify(diagnostics), {
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    }
+
     const options = buildOptions(env);
+    options.executionCtx = ctx;
 
     try {
       return withCORS(await handleProxyRequest(request, options));
