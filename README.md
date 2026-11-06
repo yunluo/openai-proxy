@@ -115,6 +115,21 @@ Responses API 与 Chat Completions 的基址并不总是相同，代理会按请
 
 [![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?to=:github)
 
+## 境内自建（Bun，推荐用于大陆模型）
+
+Cloudflare 在大陆没有执行点：大陆客户端的请求会被调度到境外 PoP（实测本机被固定调度到 AMS 阿姆斯特丹），再折回大陆上游。长流式响应在这段绕行链路上会被**概率性切断**（实测：走 CF 网关时 glm-5.3-flash 流式成功率约 30-60%，MiniMax 因其 API 域名国际线路较好基本不受影响；同机直连上游 100%）。同一份代码跑在境内机器上即可消除这段绕行：
+
+```bash
+# 任一台境内机器（本机无 Node 也可，Bun 单文件安装）
+bun server.js                # 默认监听 0.0.0.0:8787
+PORT=9000 BIND=127.0.0.1 bun server.js
+```
+
+- 环境变量与 Workers 部署完全一致（key 由客户端 `Authorization` 透传，服务端无需配置密钥）；`PROXY_ACCESS_TOKEN`、超时、各 provider 基址覆盖、`CUSTOM_PROVIDER_*` 全部通用
+- 客户端把 baseURL 指向 `http://<境内机器IP>:8787/{provider}/v1` 即可，路由、SSE 修复、终止块合成等行为与 Workers 版完全相同
+- OpenCode/ZCode 自定义 provider 示例：`"baseURL": "http://192.168.x.x:8787/glm_cp/v1"`，模型填 `glm-5.3-flash`
+- 实测（2026-11-06，glm-5.3-flash 流式长文各 5 轮）：CF 网关 0/2~3/5，**境内自建 5/5**
+
 ## 手动部署
 
 ### Cloudflare Workers (GitHub 集成)

@@ -5,7 +5,7 @@ import { API_BASE_WWW, PROVIDERS } from "../src/config.js";
 // 名称只允许 [a-z0-9_-]，避免 __proto__ 之类会污染对象原型的名字
 const CUSTOM_PROVIDER_NAME_RE = /^[a-z0-9][a-z0-9_-]*$/;
 
-function loadCustomProviders(env) {
+export function loadCustomProviders(env) {
   const providers = Object.create(null);
   let i = 1;
   while (i <= 100) {
@@ -25,8 +25,8 @@ function loadCustomProviders(env) {
   return providers;
 }
 
-// 组装 provider 配置
-function buildOptions(env) {
+// 组装 provider 配置（Workers 与 server.js 自建入口共用）
+export function buildOptions(env) {
   return {
     providers: {
       ...Object.fromEntries(
@@ -74,7 +74,7 @@ const NO_CACHE_HEADERS = {
 // 安全地为 Response 添加 CORS 头与禁缓存头
 // 对于 fetch 返回的响应，headers 可能是只读的，需要重建 Response
 // 对于我们创建的响应，headers 可直接修改
-function withCORS(response) {
+export function withCORS(response) {
   const newHeaders = new Headers(response.headers);
   for (const [key, value] of Object.entries(CORS_HEADERS)) {
     newHeaders.set(key, value);
