@@ -48,9 +48,6 @@ function buildOptions(env) {
     accessToken: env.PROXY_ACCESS_TOKEN,
     upstreamTimeoutMs: env.UPSTREAM_TIMEOUT_MS,
     streamIdleTimeoutMs: env.STREAM_IDLE_TIMEOUT_MS,
-    // 流结束诊断（断流归因用，见 /v1/debug/stream-ends）
-    kv: env.STREAM_DIAG,
-    streamDiagEnabled: env.STREAM_DIAG_ENABLED,
   };
 }
 
@@ -105,15 +102,13 @@ export default {
       });
     }
 
-    // 断流归因诊断端点：读取流结束记录（仅时间戳/字节数/类别）
+    // 断流归因诊断端点：读取当前隔离实例的流结束记录（仅时间戳/字节数/类别）
     if (
       request.method === "GET" &&
       new URL(request.url).pathname === "/v1/debug/stream-ends"
     ) {
-      const ctx = { waitUntil: (p) => {} };
-      const options = { ...buildOptions(env), executionCtx: ctx };
-      const diagnostics = await getStreamDiagnostics(options);
-      // request.cf.colo 才是 Worker 的实际执行位置（cf-ray 头里的 colo 是
+      const diagnostics = getStreamDiagnostics();
+      // request.cf.colo 是 Worker 的实际执行位置（cf-ray 头里的 colo 是
       // 处理请求的边缘 PoP，两者不同）
       diagnostics.executionColo = request.cf?.colo ?? null;
       diagnostics.country = request.cf?.country ?? null;
@@ -125,7 +120,6 @@ export default {
     }
 
     const options = buildOptions(env);
-    options.executionCtx = ctx;
 
     try {
       return withCORS(await handleProxyRequest(request, options));

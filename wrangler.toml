@@ -17,13 +17,6 @@ routes = [
 #   UPSTREAM_TIMEOUT_MS    等上游响应头的超时，默认 300000（非流式请求要等生成完才有响应头）
 #   STREAM_IDLE_TIMEOUT_MS 流式空闲超时，默认 120000；期间没有任何新数据即判定上游卡死
 #   0 表示不限制
-STREAM_DIAG_ENABLED = "1"
-#   STREAM_DIAG_ENABLED    设为 1 后每条流结束时写一条诊断到 KV（/v1/debug/stream-ends 可读），
-#                          用于归因断流发生在客户端腿还是上游腿；排查完可移除以省 KV 写额度
-
-[[kv_namespaces]]
-binding = "STREAM_DIAG"
-id = "fb716401a98f4507a19446e10e33be9b"
 
 [observability]
 enabled = true

@@ -1,68 +1,21 @@
-// 流结束诊断（隔离实例内存环形缓冲 + 可选 KV 持久化，经 /v1/debug/stream-ends 读取）：
+// 流结束诊断（按隔离实例常驻内存的环形缓冲，经 /v1/debug/stream-ends 读取）：
 // 归因断流发生在哪条腿——client-cancel=客户端侧断开；upstream-eof-no-finish=
 // 上游优雅 EOF 且未给出终止原因；upstream-interrupted=读上游时抛错；
-// complete=上游流自带终止原因正常走完。KV 记录跨隔离实例可见，24h 过期。
+// complete=上游流自带终止原因正常走完。隔离实例回收后记录清零。
 const STREAM_DIAG = {
   isolateId: `i-${Math.random().toString(36).slice(2, 10)}`,
   started: 0,
   records: [],
-  kv: null,
-  ctx: null,
-  enabled: false,
 };
 
 function recordStreamEnd(kind, detail) {
-  const record = { ts: new Date().toISOString(), kind, detail };
-  STREAM_DIAG.records.push(record);
+  STREAM_DIAG.records.push({ ts: new Date().toISOString(), kind, detail });
   if (STREAM_DIAG.records.length > 80) STREAM_DIAG.records.shift();
   console.warn(`[maxapi] stream ${kind} ${detail}`);
-  writeDiagRecord(record);
 }
 
-// KV 写入：跨隔离实例可见，用时间戳做键（保证按时间排序）
-function writeDiagRecord(record) {
-  const { kv, ctx } = STREAM_DIAG;
-  if (!kv || !STREAM_DIAG.enabled) return;
-  const key = `diag:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`;
-  try {
-    const put = kv.put(key, JSON.stringify(record), { expirationTtl: 86400 });
-    if (ctx?.waitUntil) ctx.waitUntil(put.catch(() => {}));
-  } catch (_) {
-    // 诊断写失败不影响转发
-  }
-}
-
-// options 传入 KV/开关：调试端点请求不走 handleProxyRequest，需在此自行初始化
-export async function getStreamDiagnostics(options = {}) {
-  if (options.kv) STREAM_DIAG.kv = options.kv;
-  if (options.executionCtx) STREAM_DIAG.ctx = options.executionCtx;
-  if (options.streamDiagEnabled !== undefined) {
-    STREAM_DIAG.enabled =
-      options.streamDiagEnabled === true || options.streamDiagEnabled === "1";
-  }
-  let kvRecords = [];
-  if (STREAM_DIAG.kv) {
-    try {
-      // list 按键名（时间戳）升序返回，limit 截断的是「最早」的那些；这里取足量
-      // 再按时间排序，保证最新记录可见
-      const list = await STREAM_DIAG.kv.list({ prefix: "diag:", limit: 1000 });
-      const names = (list.keys || []).map((k) => k.name).sort();
-      kvRecords = (await Promise.all(names.map((k) => STREAM_DIAG.kv.get(k))))
-        .filter(Boolean)
-        .map((v) => JSON.parse(v));
-      // 键名里的时间戳是 base36，字典序不等于时间序，必须按记录里的 ts 排序
-      kvRecords.sort((a, b) => String(a.ts).localeCompare(String(b.ts)));
-      kvRecords = kvRecords.slice(-120);
-    } catch (_) {
-      // KV 读取失败时退回内存记录
-    }
-  }
-  return {
-    isolateId: STREAM_DIAG.isolateId,
-    started: STREAM_DIAG.started,
-    kvEnabled: STREAM_DIAG.enabled,
-    records: kvRecords.concat(STREAM_DIAG.records),
-  };
+export function getStreamDiagnostics() {
+  return { ...STREAM_DIAG, records: [...STREAM_DIAG.records] };
 }
 
 // 从 headers 对象中安全地获取指定字段（兼容 Headers 对象和普通对象）
@@ -1339,13 +1292,6 @@ function buildModelsResponse(options) {
 // 主代理请求处理函数
 // ──────────────────────────────────────────────
 export async function handleProxyRequest(request, options = {}) {
-  // 流诊断的 KV 与执行上下文按请求注入（隔离实例并发请求共享最后一份配置，
-  // 对诊断记录足够）
-  STREAM_DIAG.kv = options.kv || null;
-  STREAM_DIAG.ctx = options.executionCtx || null;
-  STREAM_DIAG.enabled =
-    options.streamDiagEnabled === true || options.streamDiagEnabled === "1";
-
   // 统一处理相对路径（测试/Node）和完整 URL（Cloudflare Workers）
   const parsedUrl = new URL(request.url, "http://localhost");
   const originalPath = parsedUrl.pathname;
